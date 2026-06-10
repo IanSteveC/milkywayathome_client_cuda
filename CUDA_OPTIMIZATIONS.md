@@ -217,6 +217,25 @@ bit-identical to CPU/CUDA, 3-run deterministic; step-0 accelerations
 bit-identical to V100 across all 40 000 bodies. Runtime ~600 s vs
 V100's 188 s (~3.2×, consistent with the FP64-rate gap).
 
+Follow-up (same day): 16-arch fat binary + dist packaging + wave64.
+- Arch list = Einstein@home's eah_HierarchSearchGCT_hip set (15) plus
+  gfx90a/CDNA2: gfx906 908 90a 1010 1012 1030 1031 1032 1034 1035
+  1100 1101 1102 1103 1200 1201. Single fat binary (~30 MB).
+- Wave64 (gfx906/908/90a) masks/indexing parameterized via
+  NBODY_GPU_WARPSIZE. ROCm 7 gotcha: __AMDGCN_WAVEFRONT_SIZE__ was
+  REMOVED — detect via the __GFX9__ family macro (wave64) instead;
+  getting this wrong compiles wave64 constants into wave32 code and
+  two warps share one DFS stack (observed: -4717 garbage). wave64
+  arches are compile-verified only — no CDNA/Vega20 silicon here.
+- build_hip.sh assembles build_hip/dist/: binary + libamdhip64 +
+  libhsa-runtime64 + librocprofiler-register (+SONAME links) +
+  README. Exe rpath = $ORIGIN so bundled libs win; falls back to a
+  host ROCm. Verified: 16-arch dist binary reproduces the exact
+  short-WU value on gfx1030 with the bundled libs loading.
+- Do NOT inspect fat binaries in place with llvm-objdump
+  --offloading: it EXTRACTS bundle entries to files next to the
+  binary. Use a /tmp copy.
+
 ## Phase 1 (Lyapunov-blocked optimizations) — 2026-05-13
 
 Tried, blocked by N-body chaos. Both are real per-op rounding-rewrites in the

@@ -413,6 +413,15 @@ endif()
 add_executable(milkyway_nbody ${NBODY_SRC_DIR}/main.c)
 milkyway_link(milkyway_nbody ${BOINC_APPLICATION} ${NBODY_STATIC} "${nbody_exe_link_libs}")
 
+if(NBODY_HIP)
+  # $ORIGIN rpath: the deployed app ships libamdhip64/libhsa-runtime64
+  # beside the binary (see build_hip.sh's dist/ step); the loader finds
+  # those first and falls back to a host ROCm install when absent.
+  set_target_properties(milkyway_nbody PROPERTIES
+                        BUILD_RPATH   "\$ORIGIN"
+                        INSTALL_RPATH "\$ORIGIN")
+endif()
+
 if(NBODY_GL AND BOINC_APPLICATION AND NOT BOINC_GRAPHICS_FOUND)
   message(FATAL "BOINC graphics library not found")
 endif()

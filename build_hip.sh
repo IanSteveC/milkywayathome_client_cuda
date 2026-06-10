@@ -2,14 +2,16 @@
 # Build helper for the HIP/AMD milkyway_nbody app.
 # Mirrors build_cuda.sh but configures the HIP backend. Uses a separate
 # build directory (build_hip/) so the CUDA build is never disturbed.
+# After a successful build, assembles build_hip/dist/ containing the
+# binary plus the ROCm runtime libraries it must ship with.
 #
 # Usage:
 #   ./build_hip.sh [-b BOINC_ROOT] [-r ROCM_PATH] [-a GFX_ARCHS]
 #                  [-d BUILD_DIR] [-j N] [-h]
 #
 # Examples:
-#   ./build_hip.sh                       # all defaults (gfx1030 = RDNA2)
-#   ./build_hip.sh -a "gfx1030;gfx1100"  # RDNA2 + RDNA3
+#   ./build_hip.sh                       # all defaults (16-arch list)
+#   ./build_hip.sh -a "gfx1030"          # quick single-arch dev build
 #   ./build_hip.sh -d build_hip_test -j 16
 
 set -euo pipefail
@@ -17,31 +19,36 @@ set -euo pipefail
 # ------------------------- defaults (override via flags) ---------------------
 BOINC_ROOT="${BOINC_ROOT:-/home/ian/builds/boinc}"
 ROCM_PATH="${ROCM_PATH:-/opt/rocm}"
-GFX_ARCHS="${GFX_ARCHS:-gfx1030}"
+# Default arch list: the 15 arches shipped by Einstein@home's
+# eah_HierarchSearchGCT_hip app, plus gfx90a (CDNA2 / MI200-series).
+# wave64 arches (gfx906, gfx908, gfx90a) are compile-verified but not
+# yet validated on wave64 silicon.
+GFX_ARCHS="${GFX_ARCHS:-gfx906;gfx908;gfx90a;gfx1010;gfx1012;gfx1030;gfx1031;gfx1032;gfx1034;gfx1035;gfx1100;gfx1101;gfx1102;gfx1103;gfx1200;gfx1201}"
 BUILD_DIR="${BUILD_DIR:-build_hip}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 4)}"
 # -----------------------------------------------------------------------------
 
 usage() {
-    cat <<EOF
+    cat <<USAGE
 Usage: $0 [options]
 
 Options:
   -b BOINC_ROOT  Path to BOINC source tree (default: $BOINC_ROOT)
   -r ROCM_PATH   ROCm install prefix (default: $ROCM_PATH)
-  -a GFX_ARCHS   Semicolon-separated AMD gfx archs (default: "$GFX_ARCHS")
-                 wave32 (RDNA, gfx10xx/gfx11xx) only — CDNA (gfx90a etc.)
-                 is wave64 and is rejected at runtime.
+  -a GFX_ARCHS   Semicolon-separated AMD gfx archs (default: 16-arch list
+                 matching Einstein's HIP app + gfx90a/CDNA2)
   -d BUILD_DIR   Build directory (default: $BUILD_DIR)
   -j N           Parallel make jobs (default: $JOBS)
   -h             Show this help
 
 Common gfx archs:
-  gfx1030  RX 6800/6800XT/6900XT     (RDNA2)
-  gfx1031  RX 6700XT                 (RDNA2)
-  gfx1100  RX 7900XTX/XT             (RDNA3)
-  gfx1101  RX 7800XT/7700XT          (RDNA3)
-EOF
+  gfx906   Radeon VII / MI50          (Vega20, wave64)
+  gfx908   MI100                      (CDNA1,  wave64)
+  gfx90a   MI210/MI250                (CDNA2,  wave64)
+  gfx1030  RX 6800/6800XT/6900XT      (RDNA2,  wave32)
+  gfx1100  RX 7900XTX/XT              (RDNA3,  wave32)
+  gfx1200  RX 9070 series             (RDNA4,  wave32)
+USAGE
     exit 0
 }
 
@@ -67,7 +74,7 @@ if [ ! -x "$HIPCC_CLANG" ]; then
     exit 1
 fi
 
-cat <<EOF
+cat <<INFO
 ===== Build configuration (HIP) =====
   Source:        $SOURCE_DIR
   Build dir:     $BUILD_DIR
@@ -77,7 +84,7 @@ cat <<EOF
   Parallel jobs: $JOBS
 =====================================
 
-EOF
+INFO
 
 cd "$BUILD_DIR"
 
@@ -106,9 +113,44 @@ echo
 cmake --build . -j "$JOBS" --target milkyway_nbody
 
 BIN_PATH="$(realpath "$BUILD_DIR/bin/milkyway_nbody" 2>/dev/null || echo "$PWD/bin/milkyway_nbody")"
-cat <<EOF
+
+# ---- dist/: binary + the ROCm runtime libs that must ship with it ----
+# No static HIP runtime exists (unlike CUDA's cudart_static), so the
+# app depends on libamdhip64 & friends. Resolve the binary's actual
+# /opt/rocm-owned dependencies via ldd and copy them (versioned file +
+# SONAME symlink) next to the binary. The binary is linked with
+# -rpath \$ORIGIN, so it prefers these bundled copies and falls back
+# to a host ROCm install when absent. libdrm*/libelf/libnuma come from
+# the host's GPU driver / distro and are intentionally NOT bundled.
+DIST_DIR="$BUILD_DIR/dist"
+rm -rf "$DIST_DIR"
+mkdir -p "$DIST_DIR"
+cp -f "$BIN_PATH" "$DIST_DIR/"
+
+ldd "$BIN_PATH" | awk '$3 ~ /^\/opt\/rocm/ { print $3 }' | while read -r lib; do
+    real="$(realpath "$lib")"
+    cp -f "$real" "$DIST_DIR/$(basename "$real")"
+    soname="$(basename "$lib")"
+    if [ "$soname" != "$(basename "$real")" ]; then
+        ln -sf "$(basename "$real")" "$DIST_DIR/$soname"
+    fi
+done
+
+cat > "$DIST_DIR/README.txt" <<'RDME'
+milkyway_nbody HIP/AMD app + bundled ROCm runtime libraries.
+
+Deploy all files in this directory together (BOINC app version dir or
+anonymous-platform project dir). The binary's rpath is $ORIGIN, so it
+loads the bundled libs from its own directory first.
+
+Host requirements: amdgpu kernel driver with ROCm/KFD compute support
+and the usual GPU userspace (libdrm). No ROCm installation needed.
+RDME
+
+cat <<DONE
 
 ===== Build complete (HIP) =====
 Binary: $BIN_PATH
-EOF
-ls -la "$BIN_PATH"
+Dist:   $DIST_DIR
+DONE
+ls -la "$DIST_DIR"

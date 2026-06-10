@@ -70,8 +70,31 @@
  * builtins statically require a 64-bit mask type. On wave32 RDNA only
  * the low 32 bits are meaningful, so the value is the same. */
 #if defined(__HIP__)
-#  define NBODY_WARP_FULLMASK 0xFFFFFFFFull
+/* Wavefront width is a per-arch compile-time property on AMD:
+ * 32 on RDNA (gfx10/11/12), 64 on GCN/CDNA (gfx906/908/90a). Each
+ * --offload-arch gets its own device pass, so the macro below is
+ * correct per code object. The per-lane tree walk's RESULTS are
+ * warp-width agnostic (each lane accumulates exactly the cells it
+ * accepts, in tree-DFS order; group votes only steer traversal), so
+ * wave64 targets compute the same bits as wave32/CUDA. */
+/* ROCm 7 removed __AMDGCN_WAVEFRONT_SIZE__; the per-target FAMILY
+ * macros are the reliable compile-time signal: __GFX9__ covers all
+ * wave64 hardware (GCN Vega + CDNA: gfx906/908/90a/942), GFX10+
+ * (RDNA) compiles wave32 under HIP. Host pass defines neither; the
+ * placeholder is never used (all NBODY_GPU_WARPSIZE uses are in
+ * device code). */
+#  if defined(__GFX9__)
+#    define NBODY_GPU_WARPSIZE 64
+#  elif defined(__AMDGCN__)
+#    define NBODY_GPU_WARPSIZE 32   /* GFX10/11/12 = RDNA wave32 */
+#  else
+#    define NBODY_GPU_WARPSIZE 32   /* host pass: unused placeholder */
+#  endif
+#  define NBODY_WARP_MASK_T   unsigned long long
+#  define NBODY_WARP_FULLMASK ((NBODY_GPU_WARPSIZE == 64) ? ~0ull : 0xFFFFFFFFull)
 #else
+#  define NBODY_GPU_WARPSIZE  NBODY_CUDA_WARPSIZE   /* 32 */
+#  define NBODY_WARP_MASK_T   unsigned int
 #  define NBODY_WARP_FULLMASK 0xFFFFFFFFu
 #endif
 
@@ -409,17 +432,16 @@ extern "C" int nbCUDAGetDeviceSMCount(int* outSMs)
     fprintf(stderr, "[nbody_cuda] device %d: %s, SMs=%d, compute=%d.%d\n",
             dev, prop.name, prop.multiProcessorCount, prop.major, prop.minor);
 #if defined(__HIP__)
-    /* The per-lane tree walk's results are warp-width agnostic by
-     * design, but the 32-bit vote masks and threadIdx/32 stack
-     * indexing assume 32-lane execution. RDNA (gfx10+) runs wave32
-     * under HIP; CDNA (MI-series) is wave64 and needs the masks
-     * parameterized first. Refuse rather than silently corrupt. */
-    if (prop.warpSize != 32)
+    /* Masks/indexing are parameterized on the per-arch wavefront
+     * size (NBODY_GPU_WARPSIZE): wave32 on RDNA, wave64 on GCN/CDNA.
+     * Anything else is unknown hardware — refuse rather than corrupt. */
+    if (prop.warpSize != 32 && prop.warpSize != 64)
     {
-        fprintf(stderr, "[nbody_hip] device wavefront size is %d; this build "
-                "supports wave32 (RDNA) only\n", prop.warpSize);
+        fprintf(stderr, "[nbody_hip] unsupported wavefront size %d\n",
+                prop.warpSize);
         return -1;
     }
+    fprintf(stderr, "[nbody_hip] wavefront size: %d\n", prop.warpSize);
 #endif
     if (outSMs) *outSMs = prop.multiProcessorCount;
     return 0;
@@ -1456,7 +1478,7 @@ __global__ void nbCUDABuildTreeClearKernel(int* __restrict__ d_child,
     const int top = NBODY_CUDA_NSUB * nNode;
     const int bot = NBODY_CUDA_NSUB * nbody;
     const int inc = blockDim.x * gridDim.x;
-    int k = (bot & (-NBODY_CUDA_WARPSIZE)) + (int) (blockIdx.x * blockDim.x + threadIdx.x);
+    int k = (bot & (-NBODY_GPU_WARPSIZE)) + (int) (blockIdx.x * blockDim.x + threadIdx.x);
     if (k < bot) k += inc;
     while (k < top)
     {
@@ -2081,7 +2103,7 @@ __global__ void nbCUDASummarizationClearKernel(double* __restrict__ d_mass,
     __syncthreads();
 
     const int inc = blockDim.x * gridDim.x;
-    int k = (bottom & (-NBODY_CUDA_WARPSIZE)) + (int) (blockIdx.x * blockDim.x + threadIdx.x);
+    int k = (bottom & (-NBODY_GPU_WARPSIZE)) + (int) (blockIdx.x * blockDim.x + threadIdx.x);
     if (k < bottom) k += inc;
 
     const double nanD = nan("");
@@ -2647,7 +2669,7 @@ __global__ void nbCUDASummarizationKernel(double* __restrict__ d_posX,
     __syncthreads();
 
     const int inc = blockDim.x * gridDim.x;
-    int k = (bottom & (-NBODY_CUDA_WARPSIZE)) + (int) (blockIdx.x * blockDim.x + threadIdx.x);
+    int k = (bottom & (-NBODY_GPU_WARPSIZE)) + (int) (blockIdx.x * blockDim.x + threadIdx.x);
     if (k < bottom) k += inc;
 
     int missing = 0;
@@ -2947,7 +2969,7 @@ __global__ void nbCUDAQuadMomentsKernel(double* __restrict__ d_posX,
     __syncthreads();
 
     const int inc = blockDim.x * gridDim.x;
-    int k = (bottom & (-NBODY_CUDA_WARPSIZE)) + (int) (blockIdx.x * blockDim.x + threadIdx.x);
+    int k = (bottom & (-NBODY_GPU_WARPSIZE)) + (int) (blockIdx.x * blockDim.x + threadIdx.x);
     if (k < bottom) k += inc;
 
     if (maxDepth > NBODY_CUDA_MAXDEPTH + 1)
@@ -3325,10 +3347,10 @@ void nbCUDAForceTreeKernel(
     int    updateVel,
     double branch)
 {
-    /* Block layout: NBODY_CUDA_BLOCK / NBODY_CUDA_WARPSIZE warps,
+    /* Block layout: NBODY_CUDA_BLOCK / NBODY_GPU_WARPSIZE warps,
      * each running an independent tree walk. Per-warp scratch is
      * indexed by `base = threadIdx.x / WARPSIZE`. */
-    constexpr int kWarpsPerBlock = NBODY_CUDA_BLOCK / NBODY_CUDA_WARPSIZE;
+    constexpr int kWarpsPerBlock = NBODY_CUDA_BLOCK / NBODY_GPU_WARPSIZE;
     constexpr int kStackSlots    = NBODY_CUDA_MAXDEPTH * kWarpsPerBlock;
 
     /* Single per-block scalars set by thread 0. */
@@ -3381,8 +3403,8 @@ void nbCUDAForceTreeKernel(
     }
 
     /* Per-warp scratch indices. */
-    const unsigned int base  = threadIdx.x / NBODY_CUDA_WARPSIZE;
-    const unsigned int sbase = base * NBODY_CUDA_WARPSIZE;
+    const unsigned int base  = threadIdx.x / NBODY_GPU_WARPSIZE;
+    const unsigned int sbase = base * NBODY_GPU_WARPSIZE;
     const int          j     = (int) (base * NBODY_CUDA_MAXDEPTH);
     const bool         leader = (threadIdx.x == sbase);
 
@@ -3422,8 +3444,8 @@ void nbCUDAForceTreeKernel(
         /* Compute the warp-wide mask of lanes that still have work.
          * Used below in __all_sync so dead lanes don't pollute the
          * opening-criterion vote. Exit when no lane has work left. */
-        const unsigned int liveMask = __ballot_sync(NBODY_WARP_FULLMASK, alive);
-        if (liveMask == 0u)
+        const NBODY_WARP_MASK_T liveMask = __ballot_sync(NBODY_WARP_FULLMASK, alive);
+        if (liveMask == 0)
         {
             break;
         }
