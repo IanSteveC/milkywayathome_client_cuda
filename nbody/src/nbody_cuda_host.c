@@ -913,13 +913,17 @@ NBodyStatus_int nbRunSystemCUDA(const NBodyCtx* ctx, NBodyState* st, const void*
         return NBODY_ERROR;
     }
 
-    /* Diagnostic: cumulative max tree depth reached across the run.
-     * For the Morton-buildTree path, depth > NBODY_CUDA_MAXDEPTH+1
-     * means the MAXDEPTH-overflow branch fired and some bodies were
-     * dropped to match legacy's atomicCAS overflow semantics. */
+    /* Diagnostic: cumulative max tree depth + tree-build errorCode
+     * across the run (neither is cleared between steps). errorCode=1
+     * means the MAXDEPTH-overflow branch fired and bodies were DROPPED
+     * — the simulation silently ran with fewer than nbody bodies and
+     * the result will diverge from a CPU run of the same WU. */
     {
-        int maxDepth = nbCUDABuffersGetMaxDepth(st->cudaBuffers);
-        fprintf(stderr, "[nbody_cuda] cumulative maxDepth=%d\n", maxDepth);
+        int maxDepth  = nbCUDABuffersGetMaxDepth(st->cudaBuffers);
+        int errorCode = nbCUDABuffersGetErrorCode(st->cudaBuffers);
+        fprintf(stderr, "[nbody_cuda] cumulative maxDepth=%d errorCode=%d%s\n",
+                maxDepth, errorCode,
+                errorCode == 1 ? " (MAXDEPTH overflow: bodies dropped!)" : "");
     }
 
     return NBODY_SUCCESS;

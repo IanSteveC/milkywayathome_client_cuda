@@ -406,6 +406,13 @@ static mwbool nbReadParameters(const int argc, const char* argv[], NBodyFlags* n
         },
 
         {
+            "abort-nsteps", '\0',
+            POPT_ARG_INT, &nbf.abortNStep,
+            0, "With --use-cuda: voluntarily finish (exit 0) any workunit whose "
+               "nStep is >= this value instead of computing it. 0 = disabled (default)", NULL
+        },
+
+        {
             "non-responsive", 'r',
             POPT_ARG_NONE, &nbf.ignoreResponsive,
             0, "Do not care about display responsiveness (use with caution)", NULL

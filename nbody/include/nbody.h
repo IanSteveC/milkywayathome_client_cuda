@@ -83,9 +83,13 @@ typedef struct
     int noCleanCheckpoint;
     int disableGPUCheckpointing;
     int verbose;
+    int abortNStep;     /* If > 0 and running with --use-cuda, voluntarily
+                         * finish (exit 0, no result) any WU whose nStep is
+                         * >= this value. 0 = disabled (default). Set via
+                         * --abort-nsteps in app_info.xml <cmdline>. */
 } NBodyFlags;
 
-#define EMPTY_NBODY_FLAGS { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define EMPTY_NBODY_FLAGS { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 
 NBodyStatus nbStepSystem(const NBodyCtx* ctx, NBodyState* st);
 NBodyStatus nbRunSystem(const NBodyCtx* ctx, NBodyState* st, const NBodyFlags* nbf);

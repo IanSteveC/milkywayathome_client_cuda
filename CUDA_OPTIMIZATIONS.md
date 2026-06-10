@@ -129,6 +129,10 @@ both bodies and cells without a branch.
 | `__launch_bounds__(NBODY_CUDA_BLOCK, 3)` (same nominal occupancy as natural) | Bit-identical AND deterministic but consistently **8 s slower** on the long WU (516 s vs 508 s). Fewer regs forced more register-reuse copies despite no `LOCAL:0` spill. |
 | `__ldg()` on per-cell `d_pos`/`d_masses` reads in forceTree | Breaks bit-identity (Δ 0.02 on long WU). Cell range of `d_pos`/`d_masses` IS mutated within a step by Summarization; the read-only cache can hold stale values across the cell-recycle boundary. |
 | Removing the NaN-check on packed quad reads | Risky — kept the defensive check. |
+| Grid 3× numSMs in forceTree (24 warps/SM vs 16) | Bit-identical but **0 s wall-time change** on long WU. The kernel isn't bottlenecked by warps-in-flight — single-walk serial deps cap perf at current warp count. |
+| Software-managed L2 prefetch of next-sibling `d_cellPacked` line | Bit-identical but **+28 s on long WU** (-5.9 % regression). HW L2 prefetcher + Morton-order temporal locality already cover the next-sibling line; the extra `d_child` load + asm op consumed an LD/ST slot per leader iter with no payoff. |
+| **FMA fusion** (`--fmad=true`) | Δ headline **3.87** on short WU. **Lyapunov-amplified**: 0.5 ULP per fused op × ~6.8e11 ops × exp(170) Lyapunov gain = O(1) divergence by end of run. Same root cause prevents per-lane walks (Δ 1.182 from `project_per_lane_walk_doesnt_help`). |
+| **2-div → 1-div + 1-mul** in forceTree accept path | Δ headline **71.76** on short WU. *Wall time was -5.6 % real* (268 s vs 284 s under same MPS overhead) — confirming the perf hypothesis — but precision blowup is the same Lyapunov mechanism as FMA. |
 
 ## What's left (not pursued)
 
@@ -138,6 +142,55 @@ both bodies and cells without a branch.
 | Whole-step CUDA graph capture (everything, not just Morton) | <2 s | Per-step argument changes (LMC pos, branch flag, dt) make capture re-instantiation per step prohibitive; long-kernel launch overhead is already amortized. |
 | Raise `NBODY_CUDA_MAXDEPTH` for higher BH precision | precision, not perf | Diverges from legacy by retaining the bodies legacy drops; invalidates the bit-identical invariant. Would also need lifting in forceTree's safety check and per-warp depth-stack size. |
 | Algorithmic change (FMM, kd-tree, …) | unknown | Major rewrite; not a drop-in. |
+| FP64 tensor-core path (sm_80+ A100/H100) | ~30 % on A100 only | BH walk math is scalar/vector (3-vector dots, 3×3 matvec) — doesn't naturally fit MMA m8n8k4 / m16n8k16 tile shapes. Direct-N²-with-MMA would be 8× more work × 2× faster per op = net slower. Hybrid BH + batched-cell MMA accumulation could work but is multi-week effort. |
+
+## MAXDEPTH body-drop — long-WU divergence root cause (2026-06-10)
+
+The GPU buildTree (legacy AND Morton, which replicated legacy) capped tree
+depth at `NBODY_CUDA_MAXDEPTH = 26` and silently **discarded one body** when
+two bodies still shared an octant at the cap (errorCode=1 — set on device,
+never read by the host until now). The CPU tree (`nbLoadBody`,
+nbody_tree.c) has no depth cap. One dropped body = the GPU simulating
+39,999 bodies vs the CPU's 40,000 — a physics difference no FP matching
+can close, which Lyapunov amplification then turns into O(0.1) likelihood
+divergence and a failed validation.
+
+Deep trees come from dense dwarf cores (long evolution time + heavy LMC),
+which is why the divergence correlated with nStep: the "~50k-step tipping
+point" observed in invalid-task statistics was P(tree exceeds depth 26),
+not error accumulation. WU_1020960249 (49.6k steps, tree stays ≤ cap) was
+already bit-identical; WU_1021003732 (50.5k steps, tree wants depth 28)
+diverged by 0.109.
+
+Fix: `NBODY_CUDA_MAXDEPTH` 26 → **41** — the hard ceiling of the 128-bit
+Morton key (42 bits/axis; octant slice at `p = 123 − 3·depth` is valid for
+depth ≤ 41). Cell size at depth 42 is ~1e-10 kpc, seven orders below the
+softening length — unreachable in practice.
+
+Verification (V100):
+- Short WU: exact `-802.605484255098872`, maxDepth=25, 188 s — byte-identical
+  tree for WUs that never hit the old cap (the fix is a no-op for them).
+- Long WU GPU ×3 runs: `-56.503712855116632` deterministic, maxDepth=29, 475 s.
+- Long WU CPU (16 threads, 2809 s): **all 8 metrics bit-identical to GPU**.
+- Old GPU value `-56.612484736922859` was the dropped-body artifact.
+
+Also added: `errorCode` in the end-of-run stderr diagnostic (`cumulative
+maxDepth=N errorCode=M`, warns "bodies dropped!" on 1), and a
+`--abort-nsteps=N` CLI flag (default 0 = off) replacing the interim
+hardcoded 60k early-abort that predated this root-cause fix.
+
+## Phase 1 (Lyapunov-blocked optimizations) — 2026-05-13
+
+Tried, blocked by N-body chaos. Both are real per-op rounding-rewrites in the
+force path. Both compound to O(1) divergence over 17 008 steps via Lyapunov
+amplification factor of ~exp(170) ≈ 10⁷⁴. **Any** FP-semantics change in the
+integrator/force loop hits this wall — including FMA, fewer-div forms, and
+per-lane walks. Documented here so future readers don't re-test them.
+
+The pattern is: small per-op rounding (≤ 1 ULP) × many ops (~7×10¹¹) × Lyapunov
+gain (~exp(170)) = O(1) absolute Δ on individual metrics. The 1e-10 precision
+target proposed during this phase is *itself* incompatible with the chaos —
+any change stricter than ~10⁻³ relative is.
 
 ## Profiling
 

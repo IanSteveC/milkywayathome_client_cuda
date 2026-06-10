@@ -465,6 +465,31 @@ int nbMain(const NBodyFlags* nbf)
         return rc;
     }
 
+    /* Voluntary early-abort — optionally skip CUDA tasks whose nStep
+     * is >= the --abort-nsteps threshold (0 = disabled, the default).
+     *
+     * History: a fixed 60k threshold was added when long-WU CPU/GPU
+     * divergence looked unavoidable (a 200/200 valid/invalid analysis
+     * on host 960103 showed invalids clustering at high nStep). The
+     * root cause was later found — the GPU buildTree's MAXDEPTH=26 cap
+     * silently DROPPED bodies on deep trees while the CPU tree has no
+     * cap (fixed by raising to 41) — so the abort is no longer needed
+     * for that mechanism and now defaults off. The flag remains as an
+     * operator tool (set via app_info.xml <cmdline>) in case a future
+     * divergence pattern appears at extreme nStep. Exits cleanly via
+     * boinc_finish so the client doesn't penalize host stats. */
+    if (nbf->useCUDA && nbf->abortNStep > 0 && ctx->nStep >= (unsigned int) nbf->abortNStep)
+    {
+        mw_printf("[nbody] voluntary abort: nStep=%u >= --abort-nsteps=%d "
+                  "with --use-cuda set; skipping workunit\n",
+                  ctx->nStep, nbf->abortNStep);
+        destroyNBodyState(st);
+        #if BOINC_APPLICATION
+          boinc_finish(0);
+        #endif
+        return NBODY_SUCCESS;
+    }
+
     NBodyState initialState = EMPTY_NBODYSTATE;
     //for the first run, just assume the best likelihood timestep will occur in middle of best-likelihood window
     //convert eff_best_like_start to the original best like start

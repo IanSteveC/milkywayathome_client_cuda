@@ -76,6 +76,10 @@ int nbCUDABuffersGetNbody(const struct NBodyCUDABuffers* buffers);
 int nbCUDABuffersGetNNode(const struct NBodyCUDABuffers* buffers);
 /* Returns the cumulative max tree depth recorded in d_treeStatus, or -1 on error. */
 int nbCUDABuffersGetMaxDepth(const struct NBodyCUDABuffers* buffers);
+/* Returns the cumulative tree-build errorCode (0 = clean; 1 = MAXDEPTH
+ * overflow, bodies dropped; 3 = Morton resolution fallback; 4 = tree
+ * incest), or -1 on error. Never cleared between steps. */
+int nbCUDABuffersGetErrorCode(const struct NBodyCUDABuffers* buffers);
 
 /* opt #8 elaborate — async body marshal for bestLikelihood eval.
  * Start a non-blocking D2H of pos/vel into the buffers' pinned host

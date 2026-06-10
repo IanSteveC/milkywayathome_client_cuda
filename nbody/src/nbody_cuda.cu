@@ -77,9 +77,26 @@ struct NBodyCUDAKernels { int placeholder; };
  * the OpenCL kernel header. */
 #define NBODY_CUDA_NSUB 8
 
-/* Maximum tree depth; matches MAXDEPTH default in nbody_kernels.cl. */
+/* Maximum tree depth.
+ *
+ * History: was 26 (matching MAXDEPTH in nbody_kernels.cl). That cap is
+ * the long-WU CPU↔GPU divergence root cause: when two bodies share an
+ * octant at the cap, buildTree DROPS one body (errorCode=1) and the
+ * simulation silently continues with nbody-1 bodies. The CPU tree
+ * (nbody_tree.c nbLoadBody) has no depth cap — it subdivides until
+ * the body finds a free slot. One dropped body = real physics
+ * divergence, then Lyapunov amplification takes it to O(1e-4..1)
+ * by end of run. Short WUs never exceed depth 25, which is why they
+ * are CPU↔GPU bit-identical while deep-tree WUs (long evolution,
+ * heavy LMC → dense central cluster) diverge.
+ *
+ * Now 41 — the maximum the 128-bit Morton key resolves (42 bits/axis,
+ * octant extraction valid for depth 0..41). Trees that deep have cell
+ * sizes ~rsize/2^41 ≈ 1e-10 kpc; no realistic WU reaches it. WUs that
+ * never exceeded the old cap build byte-identical trees, so their
+ * results are unchanged. */
 #ifndef NBODY_CUDA_MAXDEPTH
-  #define NBODY_CUDA_MAXDEPTH 26
+  #define NBODY_CUDA_MAXDEPTH 41
 #endif
 
 /* On-device tree status struct. Mirrors the OpenCL TreeStatus layout
@@ -287,6 +304,21 @@ extern "C" int nbCUDABuffersGetMaxDepth(const struct NBodyCUDABuffers* buffers)
                                sizeof(int), cudaMemcpyDeviceToHost);
     if (e != cudaSuccess) return -1;
     return maxDepth;
+}
+
+/* Read d_treeStatus->errorCode back to host. Like maxDepth it is
+ * never cleared between steps, so a single end-of-run read reports
+ * any error from any step: 1 = MAXDEPTH overflow (bodies DROPPED),
+ * 3 = Morton octant resolution exceeded (rank-partition fallback),
+ * 4 = tree incest. Returns -1 on cudaMemcpy error. */
+extern "C" int nbCUDABuffersGetErrorCode(const struct NBodyCUDABuffers* buffers)
+{
+    if (!buffers || !buffers->d_treeStatus) return -1;
+    int errorCode = -1;
+    cudaError_t e = cudaMemcpy(&errorCode, &buffers->d_treeStatus->errorCode,
+                               sizeof(int), cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) return -1;
+    return errorCode;
 }
 
 extern "C" int nbCUDABuffersGetNNode(const struct NBodyCUDABuffers* buffers)
@@ -3528,7 +3560,12 @@ void nbCUDAForceTreeKernel(
                         {
                             node[depth] = n;
                             pos[depth]  = 0;
-                            dq[depth]   = d_critRadii[n];
+                            /* Read critRadii from d_cellPacked (slot 4)
+                             * rather than d_critRadii — same value, but
+                             * the line is already hot from the leader's
+                             * pos+mass load above. Saves one L2 line
+                             * touch per opened cell. */
+                            dq[depth]   = d_cellPacked[(size_t)n * 16 + 4];
                         }
                         __syncwarp();
                     }
