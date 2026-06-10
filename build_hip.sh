@@ -127,13 +127,11 @@ rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
 cp -f "$BIN_PATH" "$DIST_DIR/"
 
+# Copy each ROCm lib under its SONAME directly (the only name the
+# loader asks for). No symlinks — BOINC file distribution doesn't
+# preserve them and the versioned filename is never looked up.
 ldd "$BIN_PATH" | awk '$3 ~ /^\/opt\/rocm/ { print $3 }' | while read -r lib; do
-    real="$(realpath "$lib")"
-    cp -f "$real" "$DIST_DIR/$(basename "$real")"
-    soname="$(basename "$lib")"
-    if [ "$soname" != "$(basename "$real")" ]; then
-        ln -sf "$(basename "$real")" "$DIST_DIR/$soname"
-    fi
+    cp -f "$(realpath "$lib")" "$DIST_DIR/$(basename "$lib")"
 done
 
 cat > "$DIST_DIR/README.txt" <<'RDME'
