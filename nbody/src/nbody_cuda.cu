@@ -19,7 +19,9 @@
 
 #if NBODY_CUDA
 
+#if !defined(__HIP__)
 #include <cuda_runtime.h>
+#endif
 #include <cstdlib>
 #include <cstdio>
 #include <climits>
@@ -38,11 +40,19 @@
 #ifdef PACKED
 #  undef PACKED
 #endif
-#include <thrust/sort.h>
-#include <thrust/device_ptr.h>
-#include <thrust/execution_policy.h>
-#include <cub/device/device_radix_sort.cuh>
-#include <cuda/std/tuple>
+#if defined(__HIP__)
+/* HIP/AMD build: nbody_hip_compat.h maps the cuda* host API to hip*
+ * and provides a cub::DeviceRadixSort shim backed by rocPRIM (which
+ * has decomposer support; hipCUB in ROCm 7.2 does not). thrust is
+ * not needed — the CUB/rocPRIM path replaced the old thrust sort. */
+#  include "nbody_hip_compat.h"
+#else
+#  include <thrust/sort.h>
+#  include <thrust/device_ptr.h>
+#  include <thrust/execution_policy.h>
+#  include <cub/device/device_radix_sort.cuh>
+#  include <cuda/std/tuple>
+#endif
 
 /* Vendored crlibm log_rn for __device__ use. Matches CPU's mw_log()
  * bit-for-bit so per-step rounding errors don't compound chaotically.
@@ -54,6 +64,34 @@
  * are stable bit-flags in the public enum, so we mirror them locally. */
 #define NBODY_CUDA_SUCCESS 0
 #define NBODY_CUDA_ERROR   2     /* matches NBODY_ERROR == (1 << 1) */
+
+/* Full-warp mask for the *_sync warp intrinsics. CUDA wants a 32-bit
+ * mask (identical literal to before -- zero codegen change); HIP's
+ * builtins statically require a 64-bit mask type. On wave32 RDNA only
+ * the low 32 bits are meaningful, so the value is the same. */
+#if defined(__HIP__)
+#  define NBODY_WARP_FULLMASK 0xFFFFFFFFull
+#else
+#  define NBODY_WARP_FULLMASK 0xFFFFFFFFu
+#endif
+
+/* Cross-workgroup synchronized loads for the NaN-marker readiness
+ * protocol in Summarization/QuadMoments (writer: data -> threadfence
+ * -> ready-flag). On NVIDIA, -Xptxas -dlcm=cv makes EVERY load bypass
+ * L1, so seeing the flag implies the data reads are also L2-fresh. On
+ * AMD there is no global-bypass flag and the per-CU L0 can hold a
+ * stale data line pulled in before the writer finished -- the flag
+ * (L0 miss) can be ready while the data (L0 hit) is stale. Volatile
+ * loads compile to GLC/DLC=1 on gfx10+ (bypass L0/L1, read L2) which
+ * restores the implication. CUDA expansion is a plain read: zero
+ * codegen change there. */
+#if defined(__HIP__)
+#  define NBODY_SYNC_LOADD(arr, idx) (*(volatile const double*) &(arr)[idx])
+#  define NBODY_SYNC_LOADI(arr, idx) (*(volatile const int*)    &(arr)[idx])
+#else
+#  define NBODY_SYNC_LOADD(arr, idx) ((arr)[idx])
+#  define NBODY_SYNC_LOADI(arr, idx) ((arr)[idx])
+#endif
 
 /* Wrap a cudaError_t check: log the error site and return CUDA_ERROR
  * if the call failed. Used inside the alloc/upload paths so a single
@@ -139,15 +177,28 @@ struct Morton128Less
 
 /* Decomposer for cub::DeviceRadixSort::SortPairs. Tuple order is
  * (hi, lo) — most-significant first. CUB's radix-sort treats the
- * tuple as a packed key with hi as MSDs, lo as LSDs. */
+ * tuple as a packed key with hi as MSDs, lo as LSDs. rocPRIM (used
+ * via the cub:: shim in the HIP build) follows the same convention
+ * but expects its own tuple type. */
 struct Morton128Decomposer
 {
+#if defined(__HIP__)
+    __host__ __device__ __forceinline__
+    ::rocprim::tuple<unsigned long long&, unsigned long long&>
+    operator()(Morton128& key) const
+    {
+        /* rocprim::tuple's reference constructor is explicit, so no
+         * braced copy-init here. */
+        return ::rocprim::tuple<unsigned long long&, unsigned long long&>(key.hi, key.lo);
+    }
+#else
     __host__ __device__ __forceinline__
     ::cuda::std::tuple<unsigned long long&, unsigned long long&>
     operator()(Morton128& key) const
     {
         return {key.hi, key.lo};
     }
+#endif
 };
 
 /* Phase 1: real device-side body storage in struct-of-arrays layout.
@@ -357,6 +408,19 @@ extern "C" int nbCUDAGetDeviceSMCount(int* outSMs)
     }
     fprintf(stderr, "[nbody_cuda] device %d: %s, SMs=%d, compute=%d.%d\n",
             dev, prop.name, prop.multiProcessorCount, prop.major, prop.minor);
+#if defined(__HIP__)
+    /* The per-lane tree walk's results are warp-width agnostic by
+     * design, but the 32-bit vote masks and threadIdx/32 stack
+     * indexing assume 32-lane execution. RDNA (gfx10+) runs wave32
+     * under HIP; CDNA (MI-series) is wave64 and needs the masks
+     * parameterized first. Refuse rather than silently corrupt. */
+    if (prop.warpSize != 32)
+    {
+        fprintf(stderr, "[nbody_hip] device wavefront size is %d; this build "
+                "supports wave32 (RDNA) only\n", prop.warpSize);
+        return -1;
+    }
+#endif
     if (outSMs) *outSMs = prop.multiProcessorCount;
     return 0;
 }
@@ -2637,7 +2701,7 @@ __global__ void nbCUDASummarizationKernel(double* __restrict__ d_posX,
                         }
 
                         cell_chld[j] = ch;
-                        m = d_masses[ch];
+                        m = NBODY_SYNC_LOADD(d_masses, ch);
                         if (m < 0.0)
                         {
                             /* Cache child index so we can poll it later. */
@@ -2647,11 +2711,11 @@ __global__ void nbCUDASummarizationKernel(double* __restrict__ d_posX,
                         }
                         else
                         {
-                            if (ch >= nbody) cnt += d_count[ch] - 1;
+                            if (ch >= nbody) cnt += NBODY_SYNC_LOADI(d_count, ch) - 1;
                             cell_m[j] = m;
-                            cell_x[j] = d_posX[ch];
-                            cell_y[j] = d_posY[ch];
-                            cell_z[j] = d_posZ[ch];
+                            cell_x[j] = NBODY_SYNC_LOADD(d_posX, ch);
+                            cell_y[j] = NBODY_SYNC_LOADD(d_posY, ch);
+                            cell_z[j] = NBODY_SYNC_LOADD(d_posZ, ch);
                         }
                         ++j;
                     }
@@ -2673,7 +2737,7 @@ __global__ void nbCUDASummarizationKernel(double* __restrict__ d_posX,
                     if (m >= 0.0)
                     {
                         --missing;
-                        if (ch >= nbody) cnt += d_count[ch] - 1;
+                        if (ch >= nbody) cnt += NBODY_SYNC_LOADI(d_count, ch) - 1;
                         for (int s = 0; s < cell_n; ++s)
                         {
                             if (cell_chld[s] == ch && cell_m[s] < 0.0)
@@ -2943,20 +3007,20 @@ __global__ void nbCUDAQuadMomentsKernel(double* __restrict__ d_posX,
                         }
                         else /* isCell */
                         {
-                            qChxx = d_quadXX[ch];
+                            qChxx = NBODY_SYNC_LOADD(d_quadXX, ch);
                             if (!isnan(qChxx))
                             {
                                 /* Already ready — snapshot now. */
-                                qc_chx[j] = d_posX[ch];
-                                qc_chy[j] = d_posY[ch];
-                                qc_chz[j] = d_posZ[ch];
-                                qc_chw[j] = d_masses[ch];
+                                qc_chx[j] = NBODY_SYNC_LOADD(d_posX, ch);
+                                qc_chy[j] = NBODY_SYNC_LOADD(d_posY, ch);
+                                qc_chz[j] = NBODY_SYNC_LOADD(d_posZ, ch);
+                                qc_chw[j] = NBODY_SYNC_LOADD(d_masses, ch);
                                 qc_qxx[j] = qChxx;
-                                qc_qxy[j] = d_quadXY[ch];
-                                qc_qxz[j] = d_quadXZ[ch];
-                                qc_qyy[j] = d_quadYY[ch];
-                                qc_qyz[j] = d_quadYZ[ch];
-                                qc_qzz[j] = d_quadZZ[ch];
+                                qc_qxy[j] = NBODY_SYNC_LOADD(d_quadXY, ch);
+                                qc_qxz[j] = NBODY_SYNC_LOADD(d_quadXZ, ch);
+                                qc_qyy[j] = NBODY_SYNC_LOADD(d_quadYY, ch);
+                                qc_qyz[j] = NBODY_SYNC_LOADD(d_quadYZ, ch);
+                                qc_qzz[j] = NBODY_SYNC_LOADD(d_quadZZ, ch);
                             }
                             else
                             {
@@ -3215,7 +3279,7 @@ __device__ __constant__ double kSecondHalfBranch = -1024.0;
  * Each warp acts as a single tree-walker: lane 0 of the warp drives a
  * shared per-warp depth-first stack, broadcasts the next child to every
  * lane via shared memory, and the whole warp evaluates the opening
- * criterion in lockstep. The CUDA `__all_sync(0xFFFFFFFFu, pred)`
+ * criterion in lockstep. The CUDA `__all_sync(NBODY_WARP_FULLMASK, pred)`
  * primitive replaces the OpenCL `allBlock[]` shared-memory ballot — it
  * collapses the 32-lane vote into a single instruction with implicit
  * convergence.
@@ -3358,7 +3422,7 @@ void nbCUDAForceTreeKernel(
         /* Compute the warp-wide mask of lanes that still have work.
          * Used below in __all_sync so dead lanes don't pollute the
          * opening-criterion vote. Exit when no lane has work left. */
-        const unsigned int liveMask = __ballot_sync(0xFFFFFFFFu, alive);
+        const unsigned int liveMask = __ballot_sync(NBODY_WARP_FULLMASK, alive);
         if (liveMask == 0u)
         {
             break;
@@ -3429,11 +3493,11 @@ void nbCUDAForceTreeKernel(
                  * synchronization, replacing the previous shared-mem
                  * + __syncwarp + shared-read triple. srcLane=0 means
                  * the warp's lane-0 (the leader). */
-                n = __shfl_sync(0xFFFFFFFFu, n, 0);
-                nx_loc = __shfl_sync(0xFFFFFFFFu, nx_loc, 0);
-                ny_loc = __shfl_sync(0xFFFFFFFFu, ny_loc, 0);
-                nz_loc = __shfl_sync(0xFFFFFFFFu, nz_loc, 0);
-                nm_loc = __shfl_sync(0xFFFFFFFFu, nm_loc, 0);
+                n = __shfl_sync(NBODY_WARP_FULLMASK, n, 0);
+                nx_loc = __shfl_sync(NBODY_WARP_FULLMASK, nx_loc, 0);
+                ny_loc = __shfl_sync(NBODY_WARP_FULLMASK, ny_loc, 0);
+                nz_loc = __shfl_sync(NBODY_WARP_FULLMASK, nz_loc, 0);
+                nm_loc = __shfl_sync(NBODY_WARP_FULLMASK, nm_loc, 0);
 
                 if (n >= 0)
                 {
@@ -3469,7 +3533,7 @@ void nbCUDAForceTreeKernel(
                     const bool laneActive = alive && (lane_skip_depth < 0);
                     const bool laneAccepts = laneActive && (isBody || (rSq >= childCrit));
                     const bool laneWantsOpen = laneActive && !isBody && !(rSq >= childCrit);
-                    const bool warpOpens = __any_sync(0xFFFFFFFFu, laneWantsOpen);
+                    const bool warpOpens = __any_sync(NBODY_WARP_FULLMASK, laneWantsOpen);
                     const bool accept = laneAccepts;
 
                     if (accept)

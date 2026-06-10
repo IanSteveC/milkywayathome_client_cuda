@@ -439,6 +439,55 @@ if(NBODY_CUDA)
   message(STATUS "CUDA gencode flags:${_cuda_gencode_flags}")
 endif()
 
+# ---- HIP (AMD) support ----
+# NBODY_HIP builds the SAME GPU backend (nbody_cuda.cu + the CUDA-named
+# host wrappers) for AMD GPUs via hipcc/ROCm. Mutually exclusive with
+# NBODY_CUDA — pick one per build directory. The CUDA build process is
+# untouched when NBODY_HIP=OFF (the default). Target arch via
+# -DCMAKE_HIP_ARCHITECTURES (default gfx1030 = RDNA2; wave32 required,
+# CDNA/wave64 is rejected at runtime until masks are parameterized).
+option(NBODY_HIP "Build nbody with HIP for AMD GPUs" OFF)
+
+if(NBODY_HIP)
+  if(NBODY_CUDA)
+    message(FATAL_ERROR "NBODY_CUDA and NBODY_HIP are mutually exclusive; use separate build dirs")
+  endif()
+
+  if(NOT DEFINED CMAKE_HIP_ARCHITECTURES)
+    set(CMAKE_HIP_ARCHITECTURES "gfx1030" CACHE STRING
+        "AMD GPU architectures to build for (e.g. gfx1030;gfx1100)")
+  endif()
+
+  # ROCm's clang is the HIP compiler; help CMake find it + the hip-lang
+  # config package when ROCm lives at the standard /opt/rocm prefix.
+  if(NOT CMAKE_HIP_COMPILER AND EXISTS "/opt/rocm/llvm/bin/clang++")
+    set(CMAKE_HIP_COMPILER "/opt/rocm/llvm/bin/clang++" CACHE FILEPATH "HIP compiler")
+  endif()
+  list(APPEND CMAKE_PREFIX_PATH "/opt/rocm")
+
+  enable_language(HIP)
+
+  # This project pins very old CMake policy compat
+  # (CMAKE_POLICY_VERSION_MINIMUM=3.5), which breaks ROCm's
+  # hip-config.cmake: with CMP0012 OLD, `if(ON)` misparses and
+  # HIP_PLATFORM ends up empty ("Unexpected HIP_PLATFORM"). Scope
+  # modern policies + an explicit platform around the find_package.
+  cmake_policy(PUSH)
+  cmake_policy(SET CMP0012 NEW)
+  cmake_policy(SET CMP0057 NEW)
+  set(HIP_PLATFORM "amd")
+  find_package(hip REQUIRED CONFIG)
+  cmake_policy(POP)
+
+  # Mirror the CUDA build's FP discipline: no implicit mul+add
+  # contraction (explicit fma() calls still emit FMA, matching the
+  # CUDA build's --fmad=false + explicit-fma semantics).
+  set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -ffp-contract=off")
+
+  message(STATUS "HIP architectures: ${CMAKE_HIP_ARCHITECTURES}")
+  message(STATUS "HIP flags: ${CMAKE_HIP_FLAGS}")
+endif()
+
 
 cmake_dependent_option(NBODY_OPENMP "Use OpenMP for nbody" ON
                                     "OPENMP_FOUND" OFF)

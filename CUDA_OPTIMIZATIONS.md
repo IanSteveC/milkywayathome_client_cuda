@@ -179,6 +179,44 @@ maxDepth=N errorCode=M`, warns "bodies dropped!" on 1), and a
 `--abort-nsteps=N` CLI flag (default 0 = off) replacing the interim
 hardcoded 60k early-abort that predated this root-cause fix.
 
+## HIP/AMD port (2026-06-10)
+
+The same GPU backend now builds for AMD GPUs via `./build_hip.sh`
+(→ `build_hip/bin/milkyway_nbody`). Single source: `nbody_cuda.cu`
+compiles unchanged under hipcc; `nbody_hip_compat.h` maps the cuda*
+host API to hip* and shims `cub::DeviceRadixSort` onto rocPRIM (which
+has the decomposer support for the 128-bit Morton key that hipCUB
+lacks). The CUDA build is untouched — all HIP code is behind
+`__HIP__` / `NBODY_HIP` gates, and a CUDA regression run after the
+port reproduced -802.605484255098872 exactly.
+
+Port specifics:
+- `-ffp-contract=off` is the hipcc analog of `--fmad=false` (verified
+  at the ISA level: same source emits v_mul_f64+v_add_f64 vs
+  v_fma_f64). Explicit fma() still emits IEEE v_fma_f64, matching
+  CUDA's explicit-fma semantics.
+- Warp-sync builtins are native in ROCm ≥ 6.2 but require 64-bit
+  masks → `NBODY_WARP_FULLMASK` (same 32-bit literal under CUDA).
+- wave32 (RDNA) only for now; wave64 (CDNA) devices are rejected at
+  init. The per-lane walk's RESULTS are warp-width agnostic by
+  design, but the masks/indexing need parameterizing first.
+- **NBODY_SYNC_LOAD volatile loads** in the Summarization/QuadMoments
+  first-scan paths are the AMD equivalent of `-Xptxas -dlcm=cv`
+  (which has no HIP counterpart). Without them, the per-CU L0 can
+  serve stale child data after the ready-flag is seen → 3-run
+  scatter of O(10-100) on the short WU. With them: bit-identical and
+  deterministic. CUDA expansion is a plain read (dlcm=cv already
+  covers it there).
+- Deployment: no static HIP runtime exists (unlike cudart_static) —
+  the binary needs libamdhip64 + libhsa-runtime64 at runtime (bundle
+  with $ORIGIN rpath for BOINC). libamd_comgr is NOT needed (kernels
+  are precompiled).
+
+Verified on RX 6800 XT (gfx1030): short WU -802.605484255098872
+bit-identical to CPU/CUDA, 3-run deterministic; step-0 accelerations
+bit-identical to V100 across all 40 000 bodies. Runtime ~600 s vs
+V100's 188 s (~3.2×, consistent with the FP64-rate gap).
+
 ## Phase 1 (Lyapunov-blocked optimizations) — 2026-05-13
 
 Tried, blocked by N-body chaos. Both are real per-op rounding-rewrites in the

@@ -205,7 +205,7 @@ if(NBODY_OPENCL)
   list(APPEND nbody_lib_headers ${NBODY_INCLUDE_DIR}/nbody_cl.h)
 endif()
 
-if(NBODY_CUDA)
+if(NBODY_CUDA OR NBODY_HIP)
   list(APPEND nbody_lib_src ${NBODY_SRC_DIR}/nbody_cuda.cu
                             ${NBODY_SRC_DIR}/nbody_cuda_host.c)
   list(APPEND nbody_lib_headers ${NBODY_INCLUDE_DIR}/nbody_cuda.h
@@ -336,6 +336,18 @@ if(NBODY_CUDA)
   endif()
 endif()
 
+if(NBODY_HIP)
+  # Same GPU translation unit, routed through hipcc/clang instead of
+  # nvcc. The cuda* API names map to hip* via nbody_hip_compat.h,
+  # which the .cu includes under __HIP_PLATFORM_AMD__.
+  set_source_files_properties(${NBODY_SRC_DIR}/nbody_cuda.cu
+                              PROPERTIES LANGUAGE HIP)
+
+  # hip::host carries include paths + libamdhip64 for the host-side
+  # API calls; device code links implicitly via the HIP language.
+  list(APPEND nbody_link_libs hip::host)
+endif()
+
 if(ENABLE_CURSES)
   list(APPEND nbody_link_libs ${CURSES_LIBRARIES})
 endif()
@@ -346,7 +358,12 @@ endif()
 
 
 add_library(nbody STATIC ${nbody_lib_src} ${nbody_lib_headers})
-if(SYSTEM_IS_X86)
+if(SYSTEM_IS_X86 AND NOT NBODY_HIP)
+  # enable_sse2 sets target-level COMPILE_FLAGS, which would leak
+  # -msse2/-mfpmath=sse into the HIP device pass ("unknown FP unit
+  # 'sse'"). Skipping it on the HIP build is semantically a no-op for
+  # the host C code: on x86_64 SSE2 math is the ABI default, so the
+  # CPU-side likelihood/EMD codegen is unchanged.
   enable_sse2(nbody)
 endif()
 
@@ -356,6 +373,12 @@ if(NBODY_CUDA)
   set_target_properties(nbody PROPERTIES
                         CUDA_ARCHITECTURES "${CUDA_ARCHITECTURES}"
                         CUDA_SEPARABLE_COMPILATION ON
+                        POSITION_INDEPENDENT_CODE ON)
+endif()
+
+if(NBODY_HIP)
+  set_target_properties(nbody PROPERTIES
+                        HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}"
                         POSITION_INDEPENDENT_CODE ON)
 endif()
 

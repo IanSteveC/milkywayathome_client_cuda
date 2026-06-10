@@ -29,8 +29,19 @@
 
 #cmakedefine01 NBODY_OPENCL
 #cmakedefine01 NBODY_CUDA
+#cmakedefine01 NBODY_HIP
 #cmakedefine01 NBODY_CRLIBM
 #cmakedefine01 USE_GL3W
+
+/* The HIP/AMD backend reuses the entire CUDA host-side code path
+ * (nbody_cuda_host.c, the nbCUDA* wrapper API, the --use-cuda flag);
+ * only the GPU translation unit compiles differently. Alias the gate
+ * macro so host code needs no changes. No effect on CUDA/CPU builds
+ * (NBODY_HIP is 0 there). */
+#if NBODY_HIP
+#  undef NBODY_CUDA
+#  define NBODY_CUDA 1
+#endif
 
 #define ENABLE_CRLIBM NBODY_CRLIBM
 #define ENABLE_OPENCL NBODY_OPENCL
@@ -38,7 +49,11 @@
 
 #cmakedefine01 ENABLE_CURSES
 
-#if NBODY_CUDA && defined(_OPENMP)
+#if NBODY_HIP && defined(_OPENMP)
+  #define NBODY_EXTRAVER "HIP and OpenMP"
+#elif NBODY_HIP
+  #define NBODY_EXTRAVER "HIP"
+#elif NBODY_CUDA && defined(_OPENMP)
   #define NBODY_EXTRAVER "CUDA and OpenMP"
 #elif NBODY_CUDA
   #define NBODY_EXTRAVER "CUDA"
