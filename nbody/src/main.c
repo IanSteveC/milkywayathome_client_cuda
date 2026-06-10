@@ -400,15 +400,22 @@ static mwbool nbReadParameters(const int argc, const char* argv[], NBodyFlags* n
         },
 
         {
+            "use-gpu", '\0',
+            POPT_ARG_NONE, &nbf.useCUDA,
+            0, "Run nbody on the GPU backend the binary was built with "
+               "(CUDA on NVIDIA builds, HIP on AMD builds)", NULL
+        },
+
+        {
             "use-cuda", '\0',
             POPT_ARG_NONE, &nbf.useCUDA,
-            0, "Run nbody on a CUDA device. Requires the binary to be built with NBODY_CUDA=ON", NULL
+            0, "Deprecated alias for --use-gpu (kept for existing app_info/app_config files)", NULL
         },
 
         {
             "abort-nsteps", '\0',
             POPT_ARG_INT, &nbf.abortNStep,
-            0, "With --use-cuda: voluntarily finish (exit 0) any workunit whose "
+            0, "With --use-gpu: voluntarily finish (exit 0) any workunit whose "
                "nStep is >= this value instead of computing it. 0 = disabled (default)", NULL
         },
 
