@@ -122,10 +122,19 @@ BIN_PATH="$(realpath "$BUILD_DIR/bin/milkyway_nbody" 2>/dev/null || echo "$PWD/b
 # -rpath \$ORIGIN, so it prefers these bundled copies and falls back
 # to a host ROCm install when absent. libdrm*/libelf/libnuma come from
 # the host's GPU driver / distro and are intentionally NOT bundled.
+# Selective refresh: remove only the files this script manages, so
+# user-added deployment files (wrapper script, app_info.xml, conf,
+# renamed binary copies) survive rebuilds.
 DIST_DIR="$BUILD_DIR/dist"
-rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
+rm -f "$DIST_DIR/milkyway_nbody" "$DIST_DIR"/lib*.so* "$DIST_DIR/README.txt"
 cp -f "$BIN_PATH" "$DIST_DIR/"
+
+# Warn about stale renamed binary copies the user may be deploying.
+for f in "$DIST_DIR"/milkyway_nbody_*; do
+    [ -f "$f" ] && [ -x "$f" ] && \
+        echo "NOTE: $f is from a previous build — re-copy from $DIST_DIR/milkyway_nbody if you deploy under that name."
+done
 
 # Copy each ROCm lib under its SONAME directly (the only name the
 # loader asks for). No symlinks — BOINC file distribution doesn't
