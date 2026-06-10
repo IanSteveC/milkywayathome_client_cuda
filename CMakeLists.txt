@@ -372,9 +372,9 @@ endif()
 # NBODY_CUDA enables the CUDA backend for the nbody application. The CUDA
 # language is enabled lazily so projects that don't want CUDA don't pay
 # the price of nvcc detection. CUDA_ARCHITECTURES is a list of compute
-# capabilities to embed; default covers V100 (sm_70), A100 (sm_80) and
-# Jetson Orin (sm_87). Override on the command line, e.g.
-#   -DCUDA_ARCHITECTURES="70;80;90"
+# capabilities to embed; default covers V100 (sm_70), A100 (sm_80),
+# Jetson Orin (sm_87), and H100 (sm_90). Override on the command line,
+# e.g. -DCUDA_ARCHITECTURES="70;80".
 option(NBODY_CUDA "Build nbody with CUDA" OFF)
 
 if(NBODY_CUDA)
@@ -390,8 +390,8 @@ if(NBODY_CUDA)
   enable_language(CUDA)
 
   if(NOT DEFINED CUDA_ARCHITECTURES)
-    set(CUDA_ARCHITECTURES "70;80;87" CACHE STRING
-        "List of CUDA compute capabilities to build for (e.g. 70;80;87)")
+    set(CUDA_ARCHITECTURES "70;80;87;90" CACHE STRING
+        "List of CUDA compute capabilities to build for (e.g. 70;80;90)")
   endif()
 
   # CMake 3.18+ supports the CUDA_ARCHITECTURES target property natively.
