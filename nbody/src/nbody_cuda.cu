@@ -57,9 +57,27 @@ struct NBodyCUDAKernels { int placeholder; };
  * the OpenCL kernel header. */
 #define NBODY_CUDA_NSUB 8
 
-/* Maximum tree depth; matches MAXDEPTH default in nbody_kernels.cl. */
+/* Maximum tree depth.
+ *
+ * Was 26 (the OpenCL nbody_kernels.cl default). That cap was the
+ * long-WU CPU/GPU divergence root cause: deep trees (dense dwarf cores
+ * from long evolution + heavy LMC) exceed depth 26, where the GPU
+ * tree path loses bodies / the force walk bails, while the CPU tree
+ * (nbody_tree.c) has no depth cap. One lost body = a physics
+ * difference no FP matching can close, which Lyapunov-amplifies over
+ * the run. WUs that never exceeded the old cap build byte-identical
+ * trees, so this is a no-op for them.
+ *
+ * Raised to 41, to align with the cuda-port-optimization branch (where
+ * 41 is the 128-bit Morton key's hard ceiling). This legacy buildTree
+ * has no Morton key, so 41 is not a hard limit here — the real ceiling
+ * is the serial-DFS sort stack (STACK_SZ = 64). But 41 is far more than
+ * any realistic tree needs (deepest observed ~29), so it's chosen for
+ * consistency rather than as a limit. The forceTree per-warp DFS stacks
+ * scale with this constant: 41 * 8 warps * 16 B = ~5.2 KB/block shared
+ * mem (occupancy is register-limited, not shared-mem-limited). */
 #ifndef NBODY_CUDA_MAXDEPTH
-  #define NBODY_CUDA_MAXDEPTH 26
+  #define NBODY_CUDA_MAXDEPTH 41
 #endif
 
 /* On-device tree status struct. Mirrors the OpenCL TreeStatus layout
