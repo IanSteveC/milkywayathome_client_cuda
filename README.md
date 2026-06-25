@@ -1,320 +1,151 @@
-# Milkyway@Home Client
+# Milkyway@Home N-body — CUDA GPU port (faithful)
 
-[![Linux Build](https://travis-ci.org/Milkyway-at-home/milkywayathome_client.svg?branch=master)](https://travis-ci.org/Milkyway-at-home/milkywayathome_client)
-[![MinGW Build](https://travis-ci.org/Milkyway-at-home/milkywayathome_client.svg?branch=travis-xcompile)](https://travis-ci.org/Milkyway-at-home/milkywayathome_client)
+A CUDA port of the [Milkyway@Home](https://github.com/Milkyway-at-home/milkywayathome_client)
+N-body client. The simulation runs entirely on an NVIDIA GPU (Barnes–Hut
+tree with quadrupole moments) and produces results **bit-identical to the
+CPU reference**, so they validate against the project.
 
-> **Note:** CMake version 4.0 and later are **not currently supported**.
+This is the **`cuda-port`** branch — a **direct, faithful translation** of
+the existing OpenCL/CPU N-body code to CUDA. The goal here is fidelity,
+not speed: the kernels mirror the structure of the original
+`nbody_kernels.cl`, the tree is built with the same legacy
+allocation-order algorithm, and every stage is kept as close to the CPU
+math as possible so the GPU reproduces the CPU result exactly.
+
+> Want the faster, portable version? See the
+> **[`cuda-port-optimization`](../../tree/cuda-port-optimization)** branch.
+> It starts from this port and adds a deterministic Morton tree builder,
+> a re-optimized force walk, CUDA graphs, and an **AMD/HIP** backend —
+> while keeping the same bit-identical-to-CPU result. That branch's
+> `CUDA_OPTIMIZATIONS.md` documents every change.
 
 ---
 
-## Table of Contents
+## Design — a faithful port
 
-- [N-body](#n-body)
-- [Compiling N-body](#instructions-for-compiling-nbody)
-- [Running N-body](#running-n-body-options)
-- [Input Lua File Dwarf Model Options](#input-lua-file-dwarf-model-options)
-- [N-Body CMAKE Flags](#n-body-cmake-flags)
-- [Tests](#tests)
-- [Separation](#separation)
-- [TAO](#tao)
-- [Random Notes](#random-notes)
+- **One GPU translation unit** (`nbody_cuda.cu`) implements the full
+  per-step pipeline: bounding box → tree build → summarization →
+  quadrupole moments → Barnes–Hut force walk → leapfrog integration,
+  plus the external potential (bulge / disk / halo / LMC + dynamical
+  friction). The host marshals bodies AoS↔SoA and drives the loop; the
+  GPU does the physics.
+- **Legacy tree builder.** The tree is built with the original
+  `atomicCAS` cell-allocation kernel, mirroring the OpenCL code — not a
+  reworked algorithm.
+- **CPU-matched floating point.** Built with NVCC `--fmad=false` to
+  match the CPU's `-ffp-contract=off`, and transcendentals use vendored
+  correctly-rounded `crlibm` routines (`pow`, `log`, cube) so the GPU
+  rounds the same way the CPU does. This matters because N-body
+  integration is chaotic — a single differently-rounded operation
+  amplifies into an O(1) result difference over a full run, so faithful
+  rounding is what makes the GPU result valid.
+- **Deep-tree correctness.** `NBODY_CUDA_MAXDEPTH` is 41 (raised from the
+  OpenCL default of 26, which silently dropped a body on deep trees — the
+  long-workunit divergence root cause). Trees shallower than 26 are
+  unaffected.
 
-N-body
+CUDA only — no AMD/HIP backend on this branch.
+
 ---
-- Simulations are described with Lua input files which can be used
-  to produce an arbitrary initial configuration of particles. 
 
-- Number of particles can be indicated in the Lua input file as 
-  a total number of bodies where half will be baryons and half 
-  will be dark matter particles or as the total number of bodies
-  with the number of baryons as an extra parameter  
+## Building
 
-- Various options are available for applying external potentials
-  to a system.
+Requirements: CMake (**< 4.0**), a BOINC source tree or system install,
+and a CUDA toolkit (≥ 12.2).
 
-- Graphics can be run separately and attach to existing simulations,
-  or can be launched at the same time with the --visualizer argument
-  to the main process.
+```bash
+./build_cuda.sh                      # all defaults → build/bin/milkyway_nbody
+./build_cuda.sh -a "70;80;90"        # V100 + A100 + H100 only
+./build_cuda.sh -c /opt/cuda         # custom CUDA toolkit path
+./build_cuda.sh -d build_v100 -j 16  # named build dir, 16 jobs
+./build_cuda.sh -h                   # all options
+```
 
-- N-body videos can be produced by using a separate program to
-  record OpenGL. A wrapper script that uses this can be used as
-  the --visualizer-bin argument to record a video of the
-  visualization. An example script is at tools/RecordNBodyVideo.sh
+Defaults: BOINC app, double precision, crlibm on, OpenMP on, OpenCL off.
+`-b` overrides the BOINC root, `-a` the embedded SM architectures, `-c`
+the CUDA toolkit.
 
-- Consistent N-body results between different systems require crlibm
-  and SSE2 (at least on x86, not sure about other architectures)
+## Running on the GPU
 
-- Returning nil from makePotential() for N-body will run the
-  simulation without an external potential
+Add `--use-cuda` to a normal N-body invocation:
 
-- Device information is exposed to the workunit through the
-  deviceInfo table if it is used.
+```bash
+./bin/milkyway_nbody \
+    -f nbody_parameters.lua -h histogram.txt \
+    --seed <seed> -np 12 -p <12 params> \
+    --nthreads 4 --use-cuda
+```
 
-- **Checkpoint test does not always pass. Do not be concerned with an occasional failure**
+`--use-cuda` selects the GPU backend. `--nthreads` still controls the CPU
+threads used for the reverse-orbit setup and the likelihood/histogram
+stages.
 
-
-Instructions for Compiling Nbody
 ---
-Step 0.  Ensure proper packages are installed
 
-    (For Ubuntu) sudo apt-get install mingw-w64 cmake
-    (OpenGL)     sudo apt-get install libglu1-mesa-dev freeglut3-dev mesa-common-dev
-    (NCurses)    sudo apt-get install libncurses5-dev libncursesw5-dev
-    (OpenSSL)    sudo apt-get install libssl-dev
+## N-body usage reference
 
-Step 1.  Download all necessary files (Only need to git submodule if cross compiling with BOINC)
-```
-git clone https://github.com/Milkyway-at-home/milkywayathome_client.git
-cd milkywayathome_client
-git submodule update --init --recursive
-```
-NOTE: If you are running on WSL (Windows Subsystem Linux), you may need to run the following commands
-```
-git submodule sync
-git submodule init
-git submodule update
-```
-Step 2.  Compile Nbody
-```
-./build_client
-```
-Step 3.  Run a Nbody Simulation
-```
-./run_nbody
-```
+The options below are inherited from the upstream client and apply
+whether you run on CPU or GPU.
 
-Running N-Body Options
----
-The type of run is set by setting one of the following flags to `true`:  
-`run`, `run_compare`, `compare_only`, or `get_flag_list`.
-
-### Command-Line Options
+### Command-line options
 
 | Option | Description |
 |--------|-------------|
-| `-f`   | Path to input LUA file |
-| `-o`   | Path to bodies output file |
-| `-z`   | Path to histogram output file |
-| `-h`   | Path to histogram input file (used with `run_compare` only) |
-| `-e`   | Seed |
-| `-n`   | Number of threads to use for simulation |
-| `-P`   | Print the percentage of progress of the simulation to standard output |
-| `-u`   | Runs the visualizer (may require additional packages and compilation with OpenGL) |
-| `-p`   | Simulation paramters list (6, 7, 8, 12, 13 or 14 arguments)
+| `-f` | Path to input Lua file |
+| `-o` | Path to bodies output file |
+| `-z` | Path to histogram output file |
+| `-h` | Path to histogram input file (comparison runs) |
+| `-e` / `--seed` | RNG seed |
+| `-n` / `--nthreads` | CPU threads for setup / likelihood |
+| `-P` | Print progress percentage |
+| `-u` | Run the visualizer (needs an OpenGL build) |
+| `-p` | Simulation parameter list (6, 7, 8, 12, 13 or 14 args) |
+| `--use-cuda` | Run the simulation on the GPU |
 
-#### `-p` Options
+#### `-p` parameters
 
-- **Required 6 arguments:**  
-  `[1] Forward Time, [2] Time Ratio, [3] Baryon Scale Radius, [4] Radius Ratio, [5] Baryon Mass, [6] Mass Ratio`
-- **If 7 arguments:**  
-  - If `manual_bodies = true`: `[7] Manual Bodies Input File`  
-  - Else: `[7] LMC_mass`
-- **If 8 arguments:**  
-  `[7] LMC Mass, [8] Manual Bodies Input File`
-- **If 12 arguments:**  
-  `[7] l, [8] b, [9] r, [10] vx, [11] vy, [12] vz`
-- **If 13 arguments:**  
-  - If `manual_bodies = true`: `[13] Manual Bodies Input File`  
-  - Else: `[13] LMC_mass`
-- **If 14 arguments:**  
-  `[13] LMC Mass, [14] Manual Bodies Input File`
+- **6 (required):** `Forward Time, Time Ratio, Baryon Scale Radius, Radius Ratio, Baryon Mass, Mass Ratio`
+- **7:** `LMC_mass` (or `Manual Bodies Input File` if `manual_bodies = true`)
+- **8:** `LMC Mass, Manual Bodies Input File`
+- **12:** adds `l, b, r, vx, vy, vz`
+- **13:** as 12 plus `LMC_mass` (or manual-bodies file)
+- **14:** as 12 plus `LMC Mass, Manual Bodies Input File`
 
-#### Likelihood Comparison Flags
+#### Likelihood comparison flags
 
-| Flag | Description |
-|------|-------------|
-| `-s` | Histogram to input for comparison. Will compare with EMD and cost components by default |
-| `-S` | Adds beta dispersion to comparison |
-| `-V` | Adds velocity dispersion to comparison |
-| `-B` | Adds beta average to comparison |
-| `-Q` | Adds line of sight velocity to comparison |
-| `-U` | Adds proper motions to comparsion |
-| `-L` | Adds momentum to comparison |
+`-s` histogram to compare (EMD + cost by default); `-S` beta dispersion;
+`-V` velocity dispersion; `-B` beta average; `-Q` line-of-sight velocity;
+`-U` proper motions; `-L` momentum.
 
----
+### Input Lua dwarf models
 
-## Input Lua File Dwarf Model Options
+- **Double component (mixed):** Plummer / NFW / General Hernquist
+  `{mass, scaleLength}`, Cored `{mass, scaleLength, r1, rc}`. Set baryons
+  = total bodies and mass ratio = 1.0 to use it as a single-component
+  generator.
+- **Single component:** Plummer `{nbody, mass, scaleRadius, position, velocity, ignore, prng}`
+  (NFW and Hernquist also available; only Plummer is analytic).
 
-### Double Component Model
+### Units
 
-- **Plummer:** `{mass, scaleLength}`
-- **NFW:** `{mass, scaleLength}`
-- **General Hernquist:** `{mass, scaleLength}`
-- **Cored:** `{mass, scaleLength, r1, rc}`
+| Quantity | Unit |
+|----------|------|
+| Mass | Structure Mass Units (SMU); 1 SMU = 222288.47 M☉ |
+| Distance | kiloparsec (kpc) |
+| Time | Gigayear (Gyr) |
+| Velocity | kpc/Gyr; 1 kpc/Gyr = 0.97789439 km/s |
+| Acceleration | kpc/Gyr² |
 
-The double component mixed dwarf code can be used as a single component dwarf generator. 
-Set the number of baryons equal to the total number of particles and set the mass ratio to 1.0.
-The parameters used will be that of the baryons. 
+Chosen so that G = 1 kpc³·SMU⁻¹·Gyr⁻².
 
-### Single Component Model
+### Tests
 
-- **Plummer:** `{nbody, mass, scaleRadius, position, velocity, ignore, prng}`
-- **NFW:** `{nbody, mass, rho_0, scaleRadius, position, velocity, ignore, prng}`
-- **Hernquist:** `{nbody, mass, radius, a, position, velocity, ignore, prng}`
-
-Only the plummer model is really useful since it can be calculated analytically. 
+`make test` runs everything (slow); `make check` runs core functionality;
+`make test_${n}` for n = 100, 1024, 10000; `ctest -R <name> [-VV]` for a
+single test.
 
 ---
 
-## N-Body CMAKE Flags
-
-| Flag | Values | Description |
-|------|--------|-------------|
-| `DCMAKE_BUILD_TYPE`      | Debug, Release, RelWithDebInfo, MinSizeRel | Set to `Release` for a normal build. Other options include debugging information. |
-| `DNBODY_DEV_OPTIONS`     | ON, OFF | Set to `ON` for developer options. `OFF` to use client-side parameter files. |
-| `DNBODY_GL`              | ON, OFF | Builds the visualizer. Requires additional OpenGL packages. |
-| `DBOINC_APPLICATION`     | ON, OFF | Cross-compile with BOINC. |
-| `DSEPARATION`            | ON, OFF | Option for building the Separation code. Defaults to `OFF`. |
-| `DDOUBLEPREC`            | ON, OFF | Enable double-precision floating point calculation. |
-| `DNBODY_OPENMP`          | ON, OFF | Build the algorithm single-threaded (`OFF`) or multithreaded (`ON`). |
-| `DNBODY_OPENCL`          | ON, OFF | Build with OpenCL libraries to support running N-Body on GPUs. |
-
-## N-Body Units 
-
-- Mass: Structure Mass Units (SMU)
-- Distance: kiloparsec (kpc) 
-- Time: Gigayear (Gyr)
-- Velocity: kpc/Gyr
-- Acceleration: kpc/Gyr<sup>2</sup>
-
-Units Choosen such that:
-- G = 1 kpc<sup>3</sup> · SMU<sup>-1</sup> · Gyr<sup>-2</sup>
-
-Unit Conversions:
-- 1 SMU = 222288.47 M<sub>☉</sub> 
-- 1 kpc/Gyr = 0.97789439 km/s
-
-Tests
----
-  Tests can be run by running:
-  ```
-  $ make test
-  ```
-  However this runs all of the tests, which takes forever. You can run
-  (from the tests directory) some core functionality tests with:
-  ```
-  $ make check
-  ```
-  Other tests  can be run with a certain number of bodies depending on
-  how long you want to wait with:
-  ```
-  $ make test_${n}
-  ```
-  Currently n = 100, 1024, 10000 are available.
-
-  Single tests can be run with:
-  ```
-  $ ctest -R <Test_Name> 
-  ```
-  Get a more versbose output with:
-  ```
-  $ ctest -R <Test_Name> -VV
-  ```
-  If only 25 tests are running instead of 57 tests, you are missing libraries (check Step 0 for compiling N-body)
-
-Separation
----
-- separation will do a separation after the integration if given an
-  output file. There is also an argument to set the random number seed.
-
-TAO
----
-TODO: update for latest tao version
-
-- Maximum Likelihood Evaluation Code for running milkyway separation program
-
-- Note: Lua files for TAO searches are different from those used by the separation code.
-
-- The terminal output from this program appears confusing since it mixes the output of each separation run with that of TAO.  Using the linux ">" operator to port output to a file only takes the TAO output, making it much clearer.
-
-To run call:
-```
-  $ ./TAO <options>
-
-  General required options:
-    --separation "<path/to/separation_binary>"
-    --stars "<path/to/stars_file>"
-    --params "<path/to/search_paramaters_file>"
-    --search_type <options>
-      search type options:
-        de    - differential evolution
-        ps    - particle swarm
-        snm   - synchronous newton method
-        gd    - gradient descent
-        cgd   - conjugate gradient descent
-        sweep - paramater sweep
-
-  Search Specific Options:
-    de:
-      optional:
-        --population_size <int>         (default:200)
-        --maximum_iterations <int>        (default:will run forever - Ctrl-C to kill)
-        --maximum_created <int>         (default:will run forever - Ctrl-C to kill)
-        --maximum_reported <int>        (default:will run forever - Ctrl-C to kill)
-        --parent_scaling_factor <float>     (default:1.0)
-        --differential_scaling_factor <float> (default:1.0)
-        --crossover_rate <float>        (default:0.5)
-        --int_pairs <int>           (default:1)
-        --parent_selection <option>       (defualt:best)
-          options:
-            best
-            random
-            current-to-best
-            current-to-random
-        --recombination_selection <option>    (default:binary)
-          options:
-            binary
-            exponential
-            sum
-            none
-    ps:
-      optional:
-        --population_size <int>       (default:200)
-        --maximum_iterations <int>      (default:will run forever - Ctrl-C to kill)
-        --maximum_created <int>       (default:will run forever - Ctrl-C to kill)
-        --maximum_reported <int>      (default:will run forever - Ctrl-C to kill)
-        --inertia <float>         (default:0.75)
-        --global_best_weight <float>    (default:1.5)
-        --local_best_weight <float>     (default:1.5)
-        --initial_velocity_scale <float>  (default:0.25)
-    snm:
-      required:
-        --iterations <int>
-      optional:
-        --rand <double>     (randomizes the search parameters by +- the given percent)
-    gd:
-      required:
-        --iterations <int>
-      optional:
-        --loop1_max <int>   (default:300 iterations)
-        --loop2_max <int>   (default:300 iterations)
-        --nquad <int>     (default:4 iterations for loop 3)
-        --tol <double>      (default:1e-6 for tolerance of dstar in loop 3)
-        --min_threshold <double_1, double_2, ... , double_n>
-                    (default:line search will not quit if the input direction is very small)
-        --rand <double>     (randomizes the search parameters by +- the given percent)
-
-    gd:
-      required:
-        --iterations <int>
-        --cgd_reset <int> **roughly speaking this should be the number of paramaters...
-      optional:
-        --loop1_max <int>   (default:300 iterations)
-        --loop2_max <int>   (default:300 iterations)
-        --nquad <int>     (default:4 iterations for loop 3)
-        --tol <double>      (default:1e-6 for tolerance of dstar in loop 3)
-        --min_threshold <double_1, double_2, ... , double_n>
-                    (default:line search will not quit if the input direction is very small)
-        --rand <double>     (randomizes the search parameters by +- the given percent)
-```
-
-Random notes:
----
-
- - All give usage with --help/-? arguments
-
-make nbody_release and make separation_release will produce release
-tarballs if git and xz are installed and found.
-
-- Make sure when building with MSVC to set built to use Multithreaded
-  (/MT) for the builds of the various libraries
+For the original CPU/OpenCL client, separation code, TAO, and the
+visualizer, see the upstream
+[milkywayathome_client](https://github.com/Milkyway-at-home/milkywayathome_client).
