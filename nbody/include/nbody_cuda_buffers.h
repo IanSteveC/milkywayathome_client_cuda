@@ -118,6 +118,7 @@ NBodyStatus_int nbCUDABuffersUploadBodies(struct NBodyCUDABuffers* buffers,
                                           const double* hVelY,
                                           const double* hVelZ,
                                           const double* hMasses,
+                                          const int* hTypes,
                                           int nbody);
 
 /* Download pos/vel from the device into host SoA arrays. Used on
@@ -176,7 +177,9 @@ typedef enum {
  */
 NBodyStatus_int nbCUDALaunchForceExact(struct NBodyCUDABuffers* buffers,
                                        int nbody,
-                                       double eps2);
+                                       double eps2_0,
+                                       double eps2_1,
+                                       double eps2_2);
 
 /* ----- Phase 4: Barnes-Hut tree construction launchers ----- */
 
@@ -346,7 +349,9 @@ NBodyStatus_int nbCUDALaunchExternalPotential(struct NBodyCUDABuffers* buffers,
 NBodyStatus_int nbCUDALaunchForceTree(struct NBodyCUDABuffers* buffers,
                                       int nbody,
                                       int nNode,
-                                      double eps2,
+                                      double eps2_0,
+                                      double eps2_1,
+                                      double eps2_2,
                                       double theta,
                                       int useQuad,
                                       int updateVel,

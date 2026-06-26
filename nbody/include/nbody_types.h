@@ -473,7 +473,7 @@ typedef struct MW_ALIGN_TYPE NBodyState_s
  */
 typedef struct MW_ALIGN_TYPE NBodyCtx_s
 {
-    real eps2;                /* (potential softening parameter)^2 */
+    real eps2[3];             /* (potential softening parameter)^2, per pair type: [0]=LM-LM, [1]=cross, [2]=DM-DM (v1.96) */
     real theta;               /* accuracy parameter: 0.0 */
     real timestep;
     real timeEvolve;
@@ -550,7 +550,7 @@ typedef struct MW_ALIGN_TYPE NBodyCtx_s
 } NBodyCtx;
 
 #define NBODYCTX_TYPE "NBodyCtx"
-#define EMPTY_NBODYCTX { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,                                                        \
+#define EMPTY_NBODYCTX { {0.0, 0.0, 0.0}, 0.0, 0.0, 0.0, 0.0, 0.0,                                                        \
                          0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,                                                   \
                          0.0, 0.0, 0.0, 0.0, 0.0,                                                             \
                          InvalidCriterion, EXTERNAL_POTENTIAL_DEFAULT,                                        \
