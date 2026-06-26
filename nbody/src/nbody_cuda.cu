@@ -129,6 +129,12 @@ struct NBodyCUDABuffers
 
     double* d_masses;      /* sized nbody (exact) or nNode+1 (tree) */
 
+    /* Per-index body type for v1.96 per-type softening. Sized like
+     * d_masses. +1 light/baryon, -1 dark matter, 0 cell. Uploaded once
+     * with the bodies (cells left at 0 -> any pair with a cell takes the
+     * cross term). */
+    int*    d_types;
+
     /* Tree-side buffers. NULL when not allocated. */
     double* d_minX;        /* per-SM bounding-box reduction scratch */
     double* d_minY;
@@ -438,6 +444,22 @@ extern "C" NBodyStatus_int nbCUDABuffersAlloc(struct NBodyCUDABuffers** outBuffe
         return NBODY_CUDA_ERROR;
     }
 
+    /* d_types: int per index, sized like pos/mass. Zero-init so cells
+     * (and the unused tail) are 0; body types overwritten on upload. */
+    const size_t typeBytes = (nNode > 0)
+                           ? ((size_t) (nNode + 1) * sizeof(int))
+                           : ((size_t) nbody * sizeof(int));
+    err = cudaMalloc((void**) &b->d_types, typeBytes);
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "[nbody_cuda] cudaMalloc failed for d_types: %s\n",
+                cudaGetErrorString(err));
+        for (int i = 0; i < 10; ++i) { cudaFree(*specs[i].ptr); *specs[i].ptr = NULL; }
+        free(b);
+        return NBODY_CUDA_ERROR;
+    }
+    cudaMemset(b->d_types, 0, typeBytes);
+
     *outBuffers = b;
     return NBODY_CUDA_SUCCESS;
 }
@@ -557,6 +579,7 @@ extern "C" void nbCUDABuffersFree(struct NBodyCUDABuffers* buffers)
     if (buffers->d_accY)   cudaFree(buffers->d_accY);
     if (buffers->d_accZ)   cudaFree(buffers->d_accZ);
     if (buffers->d_masses) cudaFree(buffers->d_masses);
+    if (buffers->d_types)  cudaFree(buffers->d_types);
     /* Tree buffers (NULL-safe). */
     if (buffers->d_minX) cudaFree(buffers->d_minX);
     if (buffers->d_minY) cudaFree(buffers->d_minY);
@@ -587,6 +610,7 @@ extern "C" NBodyStatus_int nbCUDABuffersUploadBodies(struct NBodyCUDABuffers* bu
                                                      const double* hVelY,
                                                      const double* hVelZ,
                                                      const double* hMasses,
+                                                     const int* hTypes,
                                                      int nbody)
 {
     if (!buffers || nbody != buffers->nbody) return NBODY_CUDA_ERROR;
@@ -599,6 +623,9 @@ extern "C" NBodyStatus_int nbCUDABuffersUploadBodies(struct NBodyCUDABuffers* bu
     CUDA_CHECK(cudaMemcpy(buffers->d_velY, hVelY, bytes, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(buffers->d_velZ, hVelZ, bytes, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(buffers->d_masses, hMasses, bytes, cudaMemcpyHostToDevice));
+    /* Per-body type for per-type softening. Cells stay 0 from alloc. */
+    if (hTypes)
+        CUDA_CHECK(cudaMemcpy(buffers->d_types, hTypes, (size_t) nbody * sizeof(int), cudaMemcpyHostToDevice));
     return NBODY_CUDA_SUCCESS;
 }
 
@@ -689,16 +716,20 @@ __global__ void nbCUDAForceExactKernel(const double* __restrict__ d_posX,
                                        const double* __restrict__ d_posY,
                                        const double* __restrict__ d_posZ,
                                        const double* __restrict__ d_masses,
+                                       const int* __restrict__ d_types,
                                        double* __restrict__ d_accX,
                                        double* __restrict__ d_accY,
                                        double* __restrict__ d_accZ,
                                        const int    nbody,
-                                       const double eps2)
+                                       const double eps2_0,   /* LM-LM */
+                                       const double eps2_1,   /* cross */
+                                       const double eps2_2)   /* DM-DM */
 {
     __shared__ double sxs[NBODY_CUDA_BLOCK];
     __shared__ double sys[NBODY_CUDA_BLOCK];
     __shared__ double szs[NBODY_CUDA_BLOCK];
     __shared__ double sms[NBODY_CUDA_BLOCK];
+    __shared__ int    sts[NBODY_CUDA_BLOCK];   /* source body types (v1.96) */
 
     const int tid  = threadIdx.x;
     const int gtid = blockIdx.x * blockDim.x + tid;
@@ -710,6 +741,7 @@ __global__ void nbCUDAForceExactKernel(const double* __restrict__ d_posX,
     const double px = active ? d_posX[gtid] : 0.0;
     const double py = active ? d_posY[gtid] : 0.0;
     const double pz = active ? d_posZ[gtid] : 0.0;
+    const int    tp = active ? d_types[gtid] : 0;
 
     double ax = 0.0;
     double ay = 0.0;
@@ -733,6 +765,7 @@ __global__ void nbCUDAForceExactKernel(const double* __restrict__ d_posX,
             sys[tid] = d_posY[srcIdx];
             szs[tid] = d_posZ[srcIdx];
             sms[tid] = d_masses[srcIdx];
+            sts[tid] = d_types[srcIdx];
         }
         else
         {
@@ -740,6 +773,7 @@ __global__ void nbCUDAForceExactKernel(const double* __restrict__ d_posX,
             sys[tid] = 0.0;
             szs[tid] = 0.0;
             sms[tid] = 0.0;
+            sts[tid] = 0;
         }
         __syncthreads();
 
@@ -759,6 +793,11 @@ __global__ void nbCUDAForceExactKernel(const double* __restrict__ d_posX,
              *   acc.x += mor3 * dr.x  (separate mul+add, no FMA)
              * The OpenCL kernel used `mad()` (fused) and `1 mul + 1 div`
              * for rounding speed at the cost of CPU bit-equality. */
+            /* v1.96 per-type softening (mirrors CPU nbGravity_Exact). */
+            const int    s_eps = tp + sts[k];
+            const double eps2  = (s_eps == 2)  ? eps2_0
+                               : (s_eps == -2) ? eps2_2
+                                               : eps2_1;
             const double rSq  = (dx*dx + dy*dy + dz*dz) + eps2;
             const double r    = sqrt(rSq);
             const double phii = sms[k] / r;
@@ -781,7 +820,9 @@ __global__ void nbCUDAForceExactKernel(const double* __restrict__ d_posX,
 
 extern "C" NBodyStatus_int nbCUDALaunchForceExact(struct NBodyCUDABuffers* buffers,
                                                   int nbody,
-                                                  double eps2)
+                                                  double eps2_0,
+                                                  double eps2_1,
+                                                  double eps2_2)
 {
     if (!buffers || nbody != buffers->nbody || nbody <= 0)
     {
@@ -795,11 +836,14 @@ extern "C" NBodyStatus_int nbCUDALaunchForceExact(struct NBodyCUDABuffers* buffe
                                             buffers->d_posY,
                                             buffers->d_posZ,
                                             buffers->d_masses,
+                                            buffers->d_types,
                                             buffers->d_accX,
                                             buffers->d_accY,
                                             buffers->d_accZ,
                                             nbody,
-                                            eps2);
+                                            eps2_0,
+                                            eps2_1,
+                                            eps2_2);
 
     cudaError_t launchErr = cudaGetLastError();
     if (launchErr != cudaSuccess)
@@ -2196,10 +2240,13 @@ __global__ void nbCUDAForceTreeKernel(
     const double* __restrict__ d_quadYY,
     const double* __restrict__ d_quadYZ,
     const double* __restrict__ d_quadZZ,
+    const int* __restrict__ d_types,            /* per-index body type (v1.96) */
     struct NBodyCUDATreeStatus* d_treeStatus,
     int    nbody,
     int    nNode,
-    double eps2,
+    double eps2_0,    /* per-type softening^2: LM-LM */
+    double eps2_1,    /* cross (and any pair involving a cell) */
+    double eps2_2,    /* DM-DM */
     double timestep,
     int    useQuad,
     int    updateVel,
@@ -2304,6 +2351,7 @@ __global__ void nbCUDAForceTreeKernel(
     /* Cached per-body values (only meaningful when k < nbody). */
     double px = 0.0, py = 0.0, pz = 0.0;
     int    i  = -1;
+    int    tp = 0;   /* this body's type (v1.96 per-type softening) */
 
     while (true)
     {
@@ -2317,6 +2365,7 @@ __global__ void nbCUDAForceTreeKernel(
             px = d_posX[i];
             py = d_posY[i];
             pz = d_posZ[i];
+            tp = d_types[i];
         }
         else
         {
@@ -2448,6 +2497,13 @@ __global__ void nbCUDAForceTreeKernel(
                          * which differs from CPU's 2 div by ~1 ULP per cell
                          * visit. Compounds over thousands of cells per body
                          * per step over 64673 steps. */
+                        /* v1.96 per-type softening: pick LM-LM / cross /
+                         * DM-DM by tp (this body) + d_types[n] (visited
+                         * node; 0 for cells -> cross). Mirrors CPU nbGravity. */
+                        const int    s_eps = tp + d_types[n];
+                        const double eps2 = (s_eps == 2)  ? eps2_0
+                                          : (s_eps == -2) ? eps2_2
+                                                          : eps2_1;
                         rSq += eps2;
                         const double r    = sqrt(rSq);
                         const double phii = nm[base] / r;
@@ -2625,7 +2681,9 @@ __global__ void nbCUDAForceTreeKernel(
 extern "C" NBodyStatus_int nbCUDALaunchForceTree(struct NBodyCUDABuffers* buffers,
                                                  int nbody,
                                                  int nNode,
-                                                 double eps2,
+                                                 double eps2_0,
+                                                 double eps2_1,
+                                                 double eps2_2,
                                                  double theta,
                                                  int useQuad,
                                                  int updateVel,
@@ -2670,10 +2728,13 @@ extern "C" NBodyStatus_int nbCUDALaunchForceTree(struct NBodyCUDABuffers* buffer
                                            buffers->d_quadYY,
                                            buffers->d_quadYZ,
                                            buffers->d_quadZZ,
+                                           buffers->d_types,
                                            buffers->d_treeStatus,
                                            nbody,
                                            nNode,
-                                           eps2,
+                                           eps2_0,
+                                           eps2_1,
+                                           eps2_2,
                                            timestep,
                                            useQuad,
                                            updateVel,
