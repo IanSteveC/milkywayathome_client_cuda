@@ -1582,6 +1582,150 @@ extern "C" NBodyStatus_int nbCUDALaunchBuildTreeClear(struct NBodyCUDABuffers* b
  * is fine — called once per body per step, parallel across 40K
  * threads, so per-build cost is in the µs range. */
 #if !defined(NBODY_CUDA_DRIVER_API)  /* device code: excluded from MinGW host pass */
+/* ----- Windows driver-API stable radix sort (CUB replacement) -----
+ * LSD radix sort over the full 128-bit Morton key, 16 passes of 8 bits,
+ * (key, int value) pairs, ASCENDING and STABLE - exactly the contract
+ * cub::DeviceRadixSort::SortPairs provides, so the output permutation
+ * (and therefore the tree and every downstream bit) is identical.
+ *
+ * Layout per pass: chunk = 1024 elements per block (4 rounds of 256).
+ * K1 histogram -> K2 single-block exclusive scan (digit-major, so
+ * offsets are ordered digit 0..255, block 0..N: global stable order) ->
+ * K3 scatter with block-local stable ranks built from per-round
+ * warp-ballot multisplit (round order then lane order = index order).
+ * Deterministic by construction: no atomics on the scatter path.
+ * Compiled into the fatbin on every build; only launched by the
+ * driver-API host (nbWinRadixSortPairs). */
+
+#define NB_WSORT_BLOCK 256
+#define NB_WSORT_CHUNK 1024
+
+extern "C" __global__ void nbCUDAWinSortHistKernel(
+    const Morton128* __restrict__ keys,
+    int n, int pass,
+    unsigned int* __restrict__ hist /* [256 * gridDim.x], digit-major */)
+{
+    __shared__ unsigned int sh[256];
+    for (int i = threadIdx.x; i < 256; i += blockDim.x) sh[i] = 0u;
+    __syncthreads();
+
+    const int base = blockIdx.x * NB_WSORT_CHUNK;
+    const int shift = (pass & 7) * 8;
+    for (int r = 0; r < 4; ++r)
+    {
+        int i = base + r * NB_WSORT_BLOCK + threadIdx.x;
+        if (i < n)
+        {
+            unsigned long long w = (pass < 8) ? keys[i].lo : keys[i].hi;
+            atomicAdd(&sh[(unsigned)(w >> shift) & 0xFFu], 1u);
+        }
+    }
+    __syncthreads();
+    for (int d = threadIdx.x; d < 256; d += blockDim.x)
+        hist[(size_t)d * gridDim.x + blockIdx.x] = sh[d];
+}
+
+extern "C" __global__ void nbCUDAWinSortScanKernel(
+    unsigned int* __restrict__ hist, int total)
+{
+    /* single-block sequential-chunk exclusive scan; total <= ~64K so a
+     * simple deterministic loop by thread 0 over per-thread partials
+     * would be slow - use classic two-phase: threads scan strided
+     * chunks, thread 0 scans chunk sums. Deterministic (integers). */
+    __shared__ unsigned int chunkSum[NB_WSORT_BLOCK];
+    const int per = (total + blockDim.x - 1) / blockDim.x;
+    const int lo = threadIdx.x * per;
+    const int hi = min(lo + per, total);
+    unsigned int sum = 0;
+    for (int i = lo; i < hi; ++i) { unsigned int v = hist[i]; hist[i] = sum; sum += v; }
+    chunkSum[threadIdx.x] = sum;
+    __syncthreads();
+    if (threadIdx.x == 0)
+    {
+        unsigned int run = 0;
+        for (int t = 0; t < (int)blockDim.x; ++t) { unsigned int v = chunkSum[t]; chunkSum[t] = run; run += v; }
+    }
+    __syncthreads();
+    const unsigned int add = chunkSum[threadIdx.x];
+    for (int i = lo; i < hi; ++i) hist[i] += add;
+}
+
+extern "C" __global__ void nbCUDAWinSortScatterKernel(
+    const Morton128* __restrict__ keysIn,
+    const int*       __restrict__ valsIn,
+    Morton128*       __restrict__ keysOut,
+    int*             __restrict__ valsOut,
+    int n, int pass,
+    const unsigned int* __restrict__ hist /* scanned, digit-major */)
+{
+    __shared__ unsigned int base[256];      /* global scatter base per digit for this block */
+    __shared__ unsigned int done[256];      /* elements of each digit already scattered (prior rounds) */
+    __shared__ unsigned int warpHist[8][256];
+
+    for (int i = threadIdx.x; i < 256; i += blockDim.x)
+    {
+        base[i] = hist[(size_t)i * gridDim.x + blockIdx.x];
+        done[i] = 0u;
+    }
+    __syncthreads();
+
+    const int cbase = blockIdx.x * NB_WSORT_CHUNK;
+    const int shift = (pass & 7) * 8;
+    const int warp  = threadIdx.x >> 5;
+    const int lane  = threadIdx.x & 31;
+
+    for (int r = 0; r < 4; ++r)
+    {
+        const int i = cbase + r * NB_WSORT_BLOCK + threadIdx.x;
+        const bool alive = (i < n);
+        unsigned int digit = 0;
+        Morton128 k; int v = 0;
+        if (alive)
+        {
+            k = keysIn[i]; v = valsIn[i];
+            unsigned long long w = (pass < 8) ? k.lo : k.hi;
+            digit = (unsigned)(w >> shift) & 0xFFu;
+        }
+
+        /* warp-local stable rank among same-digit lanes (ballot per bit) */
+        unsigned int peers = __ballot_sync(0xFFFFFFFFu, alive);
+        for (int b = 0; b < 8; ++b)
+        {
+            unsigned int bit  = (digit >> b) & 1u;
+            unsigned int mask = __ballot_sync(0xFFFFFFFFu, bit && alive);
+            peers &= bit ? mask : ~mask;
+        }
+        const unsigned int lower = peers & ((1u << lane) - 1u);
+        const unsigned int wrank = __popc(lower);
+        const unsigned int wcnt  = __popc(peers);
+
+        /* per-warp digit counts for cross-warp (warp-order) offsets */
+        for (int d = lane; d < 256; d += 32) warpHist[warp][d] = 0u;
+        __syncthreads();
+        if (alive && wrank == 0) warpHist[warp][digit] = wcnt;
+        __syncthreads();
+
+        if (alive)
+        {
+            unsigned int before = 0;
+            for (int w2 = 0; w2 < warp; ++w2) before += warpHist[w2][digit];
+            const unsigned int dst = base[digit] + done[digit] + before + wrank;
+            keysOut[dst] = k;
+            valsOut[dst] = v;
+        }
+        __syncthreads();
+        /* fold this round's counts into done[] (single writer per digit) */
+        if (alive && wrank == 0)
+        {
+            atomicAdd(&done[digit], wcnt);   /* shared, counts only: deterministic sum */
+        }
+        __syncthreads();
+    }
+}
+
+#endif /* !NBODY_CUDA_DRIVER_API (win sort kernels) */
+
+#if !defined(NBODY_CUDA_DRIVER_API)  /* device code: excluded from MinGW host pass */
 __device__ __forceinline__ void mortonExpandBits42(unsigned long long v,
                                                     unsigned long long* out_lo,
                                                     unsigned long long* out_hi)
@@ -2645,22 +2789,10 @@ extern "C" NBodyStatus_int nbCUDALaunchBuildTree(struct NBodyCUDABuffers* buffer
      * bestLikelihood eval) to remain deterministic. */
     {
         static int useMortonCached = -1;
-#ifdef NBODY_CUDA_DRIVER_API
-        /* TODO(win-sort): flip to Morton default once nbWinRadixSortPairs
-         * lands. Until then the driver-API build uses the legacy
-         * builder (bit-identical results, verified). */
-        if (useMortonCached < 0) {
-            const char* env = getenv("NBODY_BUILDTREE_MORTON");
-            useMortonCached = (env && env[0] == '1') ? 1 : 0;
-            if (!useMortonCached)
-                fprintf(stderr, "[nbody_cuda_win] legacy buildTree (Morton pending custom sort)\n");
-        }
-#else
         if (useMortonCached < 0) {
             const char* env = getenv("NBODY_BUILDTREE_MORTON");
             useMortonCached = (env && env[0] == '0') ? 0 : 1;
         }
-#endif
         if (useMortonCached) {
             return nbCUDABuildTreeMorton(buffers, nbody, nNode);
         }
