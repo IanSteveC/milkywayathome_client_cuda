@@ -209,6 +209,9 @@ CUresult nbWinRadixSortPairs(void* d_keys_in, void* d_keys_out,
     X(nbCUDASortKernel)                 \
     X(nbCUDASortIdentityKernel)         \
     X(nbCUDASortSerialDFSKernel)        \
+    X(nbCUDAWinSortHistKernel)          \
+    X(nbCUDAWinSortScanKernel)          \
+    X(nbCUDAWinSortScatterKernel)       \
     X(nbCUDABuildTreeKernel)            \
     X(nbCUDASummarizationKernel)        \
     X(nbCUDAQuadMomentsKernel)          \
