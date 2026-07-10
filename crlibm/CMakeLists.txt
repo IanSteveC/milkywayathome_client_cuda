@@ -257,9 +257,12 @@ endif()
 option(BUILD_INTERVAL_FUNCTIONS "Something" OFF)
 
 
+# Generate into the BUILD dir (was the source dir), so per-host configs
+# (Linux native vs MinGW cross) can't cross-contaminate a shared tree.
 configure_file (
   "${PROJECT_SOURCE_DIR}/crlibm_config.h.in"
-  "${PROJECT_SOURCE_DIR}/crlibm_config.h")
+  "${PROJECT_BINARY_DIR}/crlibm_config.h")
+include_directories(BEFORE "${PROJECT_BINARY_DIR}")
 
 if(MSVC)
   set_property(SOURCE ${crlibm_src} PROPERTY LANGUAGE CXX)

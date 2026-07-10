@@ -376,8 +376,17 @@ endif()
 # Jetson Orin (sm_87), and H100 (sm_90). Override on the command line,
 # e.g. -DCUDA_ARCHITECTURES="70;80".
 option(NBODY_CUDA "Build nbody with CUDA" OFF)
+option(NBODY_CUDA_WIN "Cross-build the CUDA app for Windows via the driver API (MinGW host, embedded fatbin kernels)" OFF)
 
-if(NBODY_CUDA)
+if(NBODY_CUDA_WIN)
+  # Host side is plain C++ over the CUDA *driver* API; kernels come from
+  # a fatbin built separately by nvcc (see build_cuda_win.sh). No CUDA
+  # language support or toolkit libraries are needed in this configure.
+  set(NBODY_CUDA ON)
+  add_definitions("-DNBODY_CUDA_DRIVER_API")
+endif()
+
+if(NBODY_CUDA AND NOT NBODY_CUDA_WIN)
   if(NOT CMAKE_CUDA_COMPILER)
     # Prefer CUDA 12.9 if installed at the standard /usr/local path. The user
     # can override by passing -DCMAKE_CUDA_COMPILER=/path/to/nvcc.

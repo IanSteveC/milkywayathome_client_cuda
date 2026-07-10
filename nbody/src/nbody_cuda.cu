@@ -19,9 +19,24 @@
 
 #if NBODY_CUDA
 
-#if !defined(__HIP__)
+#if !defined(__HIP__) && !defined(NBODY_CUDA_DRIVER_API)
 #include <cuda_runtime.h>
 #endif
+
+/* ----- launch indirection for the Windows driver-API host pass -----
+ * On the native nvcc/hipcc builds these macros expand to the exact
+ * <<< >>> launches this file always had (bit-identical codegen). The
+ * MinGW driver-API host pass (NBODY_CUDA_DRIVER_API) gets
+ * cuLaunchKernel-based versions from nbody_cuda_driver_compat.h. */
+#ifndef NBODY_CUDA_DRIVER_API
+  #define NB_LAUNCH(kern, grid, block, ...) \
+      kern<<<(grid), (block)>>>(__VA_ARGS__)
+  #define NB_LAUNCH_S(kern, grid, block, shmem, stream, ...) \
+      kern<<<(grid), (block), (shmem), (stream)>>>(__VA_ARGS__)
+#else
+  #include "nbody_cuda_driver_compat.h"
+#endif
+
 #include <cstdlib>
 #include <cstdio>
 #include <climits>
@@ -46,7 +61,7 @@
  * has decomposer support; hipCUB in ROCm 7.2 does not). thrust is
  * not needed — the CUB/rocPRIM path replaced the old thrust sort. */
 #  include "nbody_hip_compat.h"
-#else
+#elif !defined(NBODY_CUDA_DRIVER_API)
 #  include <thrust/sort.h>
 #  include <thrust/device_ptr.h>
 #  include <thrust/execution_policy.h>
@@ -57,7 +72,9 @@
 /* Vendored crlibm log_rn for __device__ use. Matches CPU's mw_log()
  * bit-for-bit so per-step rounding errors don't compound chaotically.
  * Single-TU header; only included here. */
-#include "nbody_cuda_crlibm.cuh"
+#ifndef NBODY_CUDA_DRIVER_API
+#include "nbody_cuda_crlibm.cuh"   /* __device__ only */
+#endif
 
 /* nbody_types.h's NBODY_SUCCESS/NBODY_ERROR aren't visible here (we
  * can't include that header from the .cu translation unit). The values
@@ -203,6 +220,7 @@ struct Morton128Less
  * tuple as a packed key with hi as MSDs, lo as LSDs. rocPRIM (used
  * via the cub:: shim in the HIP build) follows the same convention
  * but expects its own tuple type. */
+#if !defined(NBODY_CUDA_DRIVER_API)  /* CUB/rocPRIM only */
 struct Morton128Decomposer
 {
 #if defined(__HIP__)
@@ -223,6 +241,7 @@ struct Morton128Decomposer
     }
 #endif
 };
+#endif /* !NBODY_CUDA_DRIVER_API (decomposer) */
 
 /* Phase 1: real device-side body storage in struct-of-arrays layout.
  * Phase 4: extended with Barnes-Hut tree storage.
@@ -832,6 +851,7 @@ extern "C" NBodyStatus_int nbCUDATreeBuffersAlloc(struct NBodyCUDABuffers* buffe
          * key type. Query once (passing nullptr for d_temp_storage)
          * and pre-allocate. */
         buffers->sortTempBytes = 0;
+#ifndef NBODY_CUDA_DRIVER_API
         cudaError_t cubQueryErr = cub::DeviceRadixSort::SortPairs(
             (void*) nullptr, buffers->sortTempBytes,
             (const Morton128*) buffers->d_mortonScratch,
@@ -847,6 +867,10 @@ extern "C" NBodyStatus_int nbCUDATreeBuffersAlloc(struct NBodyCUDABuffers* buffe
                     cudaGetErrorString(cubQueryErr), buffers->sortTempBytes);
             goto fail;
         }
+#else
+        /* driver-API build: custom stable radix sort workspace */
+        buffers->sortTempBytes = nbWinRadixSortQueryTemp(buffers->nbody);
+#endif
         if (nbCUDAMallocRecorded((void**) &buffers->d_sortTempStorage,
                                  buffers->sortTempBytes,
                                  allocList, &nAlloc, 48)) goto fail;
@@ -1167,7 +1191,8 @@ extern "C" NBodyStatus_int nbCUDABuffersDownloadAccels(const struct NBodyCUDABuf
  * branch is predicated and outside the FP-heavy inner work, so the
  * cost is negligible. Padding-style optimization can come back as
  * part of Phase 6 if profiling motivates it. */
-__global__ void nbCUDAForceExactKernel(const double* __restrict__ d_posX,
+#if !defined(NBODY_CUDA_DRIVER_API)  /* device code: excluded from MinGW host pass */
+extern "C" __global__ void nbCUDAForceExactKernel(const double* __restrict__ d_posX,
                                        const double* __restrict__ d_posY,
                                        const double* __restrict__ d_posZ,
                                        const double* __restrict__ d_masses,
@@ -1272,6 +1297,7 @@ __global__ void nbCUDAForceExactKernel(const double* __restrict__ d_posX,
         d_accZ[gtid] = az;
     }
 }
+#endif /* !NBODY_CUDA_DRIVER_API (device code) */
 
 extern "C" NBodyStatus_int nbCUDALaunchForceExact(struct NBodyCUDABuffers* buffers,
                                                   int nbody,
@@ -1287,7 +1313,7 @@ extern "C" NBodyStatus_int nbCUDALaunchForceExact(struct NBodyCUDABuffers* buffe
     const int block = NBODY_CUDA_BLOCK;
     const int grid  = (nbody + block - 1) / block;
 
-    nbCUDAForceExactKernel<<<grid, block>>>(buffers->d_posX,
+    NB_LAUNCH(nbCUDAForceExactKernel, grid, block, buffers->d_posX,
                                             buffers->d_posY,
                                             buffers->d_posZ,
                                             buffers->d_masses,
@@ -1336,7 +1362,8 @@ extern "C" NBodyStatus_int nbCUDALaunchForceExact(struct NBodyCUDABuffers* buffe
  * AABB; the last block to finish writes the root cell into node nNode
  * and resets the tree counters in d_treeStatus. Mirrors
  * nbody_kernels.cl:736-857. */
-__global__ void nbCUDABoundingBoxKernel(const double* __restrict__ d_posX,
+#if !defined(NBODY_CUDA_DRIVER_API)  /* device code: excluded from MinGW host pass */
+extern "C" __global__ void nbCUDABoundingBoxKernel(const double* __restrict__ d_posX,
                                         const double* __restrict__ d_posY,
                                         const double* __restrict__ d_posZ,
                                         double* __restrict__ d_minX,
@@ -1470,6 +1497,7 @@ __global__ void nbCUDABoundingBoxKernel(const double* __restrict__ d_posX,
         }
     }
 }
+#endif /* !NBODY_CUDA_DRIVER_API (device code) */
 
 extern "C" NBodyStatus_int nbCUDALaunchBoundingBox(struct NBodyCUDABuffers* buffers,
                                                    int nbody,
@@ -1482,7 +1510,7 @@ extern "C" NBodyStatus_int nbCUDALaunchBoundingBox(struct NBodyCUDABuffers* buff
     const int block = NBODY_CUDA_BLOCK;
     const int grid  = buffers->numSMs > 0 ? buffers->numSMs : 1;
 
-    nbCUDABoundingBoxKernel<<<grid, block>>>(buffers->d_posX,
+    NB_LAUNCH(nbCUDABoundingBoxKernel, grid, block, buffers->d_posX,
                                              buffers->d_posY,
                                              buffers->d_posZ,
                                              buffers->d_minX,
@@ -1514,7 +1542,8 @@ extern "C" NBodyStatus_int nbCUDALaunchBoundingBox(struct NBodyCUDABuffers* buff
 #define NBODY_CUDA_NULL_BODY (-1)
 #define NBODY_CUDA_WARPSIZE  32
 
-__global__ void nbCUDABuildTreeClearKernel(int* __restrict__ d_child,
+#if !defined(NBODY_CUDA_DRIVER_API)  /* device code: excluded from MinGW host pass */
+extern "C" __global__ void nbCUDABuildTreeClearKernel(int* __restrict__ d_child,
                                            double* __restrict__ d_posX,
                                            double* __restrict__ d_posY,
                                            double* __restrict__ d_posZ,
@@ -1533,6 +1562,7 @@ __global__ void nbCUDABuildTreeClearKernel(int* __restrict__ d_child,
     }
 
 }
+#endif /* !NBODY_CUDA_DRIVER_API (device code) */
 
 extern "C" NBodyStatus_int nbCUDALaunchBuildTreeClear(struct NBodyCUDABuffers* buffers,
                                                       int nNode)
@@ -1540,7 +1570,7 @@ extern "C" NBodyStatus_int nbCUDALaunchBuildTreeClear(struct NBodyCUDABuffers* b
     if (!buffers || !buffers->d_child) return NBODY_CUDA_ERROR;
     const int block = NBODY_CUDA_BLOCK;
     const int grid  = buffers->numSMs > 0 ? buffers->numSMs : 1;
-    nbCUDABuildTreeClearKernel<<<grid, block>>>(buffers->d_child,
+    NB_LAUNCH(nbCUDABuildTreeClearKernel, grid, block, buffers->d_child,
                                                 buffers->d_posX,
                                                 buffers->d_posY,
                                                 buffers->d_posZ,
@@ -1597,6 +1627,7 @@ extern "C" NBodyStatus_int nbCUDALaunchBuildTreeClear(struct NBodyCUDABuffers* b
  * the result as a (lo, hi) pair packed into 128 bits. Linear loop
  * is fine — called once per body per step, parallel across 40K
  * threads, so per-build cost is in the µs range. */
+#if !defined(NBODY_CUDA_DRIVER_API)  /* device code: excluded from MinGW host pass */
 __device__ __forceinline__ void mortonExpandBits42(unsigned long long v,
                                                     unsigned long long* out_lo,
                                                     unsigned long long* out_hi)
@@ -1664,7 +1695,7 @@ __device__ __forceinline__ unsigned int morton128_octant(const Morton128& m, int
  * bits (125-3d, 124-3d, 123-3d) of the 126-bit Morton. The
  * morton128_octant() helper extracts this 3-bit slice from a
  * (lo, hi) pair. */
-__global__ void nbCUDAComputeMortonKernel(
+extern "C" __global__ void nbCUDAComputeMortonKernel(
     const double* __restrict__ d_posX,
     const double* __restrict__ d_posY,
     const double* __restrict__ d_posZ,
@@ -1753,7 +1784,7 @@ __global__ void nbCUDAComputeMortonKernel(
  * into the level-out queue at positions allocated via atomicAdd on
  * d_outCount. d_inCount/d_outCount are pure device-side counters: no
  * host syncs needed between levels. */
-__global__ void nbCUDAMortonFusedKernel(
+extern "C" __global__ void nbCUDAMortonFusedKernel(
     const Morton128* __restrict__ d_morton,
     const int* __restrict__ d_sortedIdx,
     const int* __restrict__ d_lvlInCells,
@@ -1904,7 +1935,7 @@ __global__ void nbCUDAMortonFusedKernel(
 }
 
 /* Tiny kernel: in_count = out_count; out_count = 0. */
-__global__ void nbCUDAMortonSwapCountersKernel(int* d_inCount, int* d_outCount)
+extern "C" __global__ void nbCUDAMortonSwapCountersKernel(int* d_inCount, int* d_outCount)
 {
     if (threadIdx.x == 0 && blockIdx.x == 0)
     {
@@ -1915,7 +1946,7 @@ __global__ void nbCUDAMortonSwapCountersKernel(int* d_inCount, int* d_outCount)
 
 /* Tiny kernel: seed the level-in queue with the root cell AND set
  * counters (in_count=1, out_count=0). One thread does all of it. */
-__global__ void nbCUDAMortonSeedRootKernel(int* d_lvlInCells,
+extern "C" __global__ void nbCUDAMortonSeedRootKernel(int* d_lvlInCells,
                                            int* d_lvlInStart,
                                            int* d_lvlInEnd,
                                            int* d_lvlInDepth,
@@ -1934,6 +1965,7 @@ __global__ void nbCUDAMortonSeedRootKernel(int* d_lvlInCells,
         *d_outCount = 0;
     }
 }
+#endif /* !NBODY_CUDA_DRIVER_API (device code) */
 
 /* ============================================================
  * nbCUDABuildTreeMorton — full deterministic tree builder.
@@ -1982,13 +2014,14 @@ static cudaError_t nbCUDAMortonRecord(struct NBodyCUDABuffers* buffers,
     const int grid  = (nbody + block - 1) / block;
 
     /* Phase 1: Morton compute → *Scratch arrays. */
-    nbCUDAComputeMortonKernel<<<grid, block, 0, stream>>>(
+    NB_LAUNCH_S(nbCUDAComputeMortonKernel, grid, block, 0, stream, 
         buffers->d_posX, buffers->d_posY, buffers->d_posZ,
         buffers->d_mortonScratch, buffers->d_sortedIdxScratch,
         buffers->d_treeStatus, nbody);
     if ((err = cudaGetLastError()) != cudaSuccess) return err;
 
     /* Phase 2: CUB radix sort, decomposer-driven, on the same stream. */
+#ifndef NBODY_CUDA_DRIVER_API
     err = cub::DeviceRadixSort::SortPairs(
         buffers->d_sortTempStorage, buffers->sortTempBytes,
         (const Morton128*) buffers->d_mortonScratch,
@@ -1998,10 +2031,16 @@ static cudaError_t nbCUDAMortonRecord(struct NBodyCUDABuffers* buffers,
         nbody,
         Morton128Decomposer{},
         0, 128, stream);
+#else
+    err = nbWinRadixSortPairs(buffers->d_mortonScratch, buffers->d_morton,
+                              buffers->d_sortedIdxScratch, buffers->d_sortedIdx,
+                              buffers->d_sortTempStorage, buffers->sortTempBytes,
+                              nbody, stream);
+#endif
     if (err != cudaSuccess) return err;
 
     /* Phase 3: seed root cell + reset counters. */
-    nbCUDAMortonSeedRootKernel<<<1, 32, 0, stream>>>(
+    NB_LAUNCH_S(nbCUDAMortonSeedRootKernel, 1, 32, 0, stream, 
         buffers->d_lvlInCells, buffers->d_lvlInStart,
         buffers->d_lvlInEnd,   buffers->d_lvlInDepth,
         buffers->d_lvlInCount, buffers->d_lvlOutCount,
@@ -2023,7 +2062,7 @@ static cudaError_t nbCUDAMortonRecord(struct NBodyCUDABuffers* buffers,
     int* lvlOutDepth  = buffers->d_lvlOutDepth;
     for (int level = 0; level <= NBODY_CUDA_MAXDEPTH; ++level)
     {
-        nbCUDAMortonFusedKernel<<<grid, block, 0, stream>>>(
+        NB_LAUNCH_S(nbCUDAMortonFusedKernel, grid, block, 0, stream, 
             buffers->d_morton, buffers->d_sortedIdx,
             lvlInCells, lvlInStart, lvlInEnd, lvlInDepth,
             buffers->d_lvlInCount,
@@ -2034,7 +2073,7 @@ static cudaError_t nbCUDAMortonRecord(struct NBodyCUDABuffers* buffers,
             buffers->d_critRadii,
             buffers->d_treeStatus,
             nbody, nNode);
-        nbCUDAMortonSwapCountersKernel<<<1, 32, 0, stream>>>(
+        NB_LAUNCH_S(nbCUDAMortonSwapCountersKernel, 1, 32, 0, stream, 
             buffers->d_lvlInCount, buffers->d_lvlOutCount);
         { int* t = lvlInCells; lvlInCells = lvlOutCells; lvlOutCells = t; }
         { int* t = lvlInStart; lvlInStart = lvlOutStart; lvlOutStart = t; }
@@ -2133,7 +2172,8 @@ extern "C" NBodyStatus_int nbCUDABuildTreeMorton(struct NBodyCUDABuffers* buffer
 /* summarizationClear: invalidate cell mass/start fields and quad
  * moments in the range below the current treeStatus->bottom watermark.
  * Mirrors nbody_kernels.cl:1258-1296. */
-__global__ void nbCUDASummarizationClearKernel(double* __restrict__ d_mass,
+#if !defined(NBODY_CUDA_DRIVER_API)  /* device code: excluded from MinGW host pass */
+extern "C" __global__ void nbCUDASummarizationClearKernel(double* __restrict__ d_mass,
                                                int*    __restrict__ d_start,
                                                double* __restrict__ d_quadXX,
                                                double* __restrict__ d_quadXY,
@@ -2169,6 +2209,7 @@ __global__ void nbCUDASummarizationClearKernel(double* __restrict__ d_mass,
         k += inc;
     }
 }
+#endif /* !NBODY_CUDA_DRIVER_API (device code) */
 
 extern "C" NBodyStatus_int nbCUDALaunchSummarizationClear(struct NBodyCUDABuffers* buffers,
                                                           int nbody,
@@ -2178,7 +2219,7 @@ extern "C" NBodyStatus_int nbCUDALaunchSummarizationClear(struct NBodyCUDABuffer
     if (!buffers || !buffers->d_treeStatus) return NBODY_CUDA_ERROR;
     const int block = NBODY_CUDA_BLOCK;
     const int grid  = buffers->numSMs > 0 ? buffers->numSMs : 1;
-    nbCUDASummarizationClearKernel<<<grid, block>>>(buffers->d_masses,
+    NB_LAUNCH(nbCUDASummarizationClearKernel, grid, block, buffers->d_masses,
                                                     buffers->d_start,
                                                     buffers->d_quadXX,
                                                     buffers->d_quadXY,
@@ -2200,7 +2241,8 @@ extern "C" NBodyStatus_int nbCUDALaunchSummarizationClear(struct NBodyCUDABuffer
  * the sort permutation. Bodies in the same leaf land contiguously,
  * which improves coalescing in the subsequent force kernel.
  * Mirrors the NVIDIA branch of nbody_kernels.cl:1541-1579. */
-__global__ void nbCUDASortKernel(const int* __restrict__ d_count,
+#if !defined(NBODY_CUDA_DRIVER_API)  /* device code: excluded from MinGW host pass */
+extern "C" __global__ void nbCUDASortKernel(const int* __restrict__ d_count,
                                  int* __restrict__ d_start,
                                  int* __restrict__ d_sort,
                                  const int* __restrict__ d_child,
@@ -2243,7 +2285,7 @@ __global__ void nbCUDASortKernel(const int* __restrict__ d_count,
 
 /* Identity permutation: d_sort[i] = i. Replaces the Barnes-Hut sort
  * for now; correctness-only, no spatial locality. */
-__global__ void nbCUDASortIdentityKernel(int* __restrict__ d_sort, int nbody)
+extern "C" __global__ void nbCUDASortIdentityKernel(int* __restrict__ d_sort, int nbody)
 {
     const int stride = blockDim.x * gridDim.x;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -2259,7 +2301,7 @@ __global__ void nbCUDASortIdentityKernel(int* __restrict__ d_sort, int nbody)
  * appear in tree-traversal order (siblings adjacent → spatial
  * locality for the force-walk). Slow vs a real parallel sort but
  * fast enough (~1 ms/step for ~80K cells) and provably correct. */
-__global__ void nbCUDASortSerialDFSKernel(const int* __restrict__ d_child,
+extern "C" __global__ void nbCUDASortSerialDFSKernel(const int* __restrict__ d_child,
                                           int* __restrict__ d_sort,
                                           int nbody,
                                           int nNode)
@@ -2331,6 +2373,7 @@ __global__ void nbCUDASortSerialDFSKernel(const int* __restrict__ d_child,
         }
     }
 }
+#endif /* !NBODY_CUDA_DRIVER_API (device code) */
 
 extern "C" NBodyStatus_int nbCUDALaunchSort(struct NBodyCUDABuffers* buffers,
                                             int nbody,
@@ -2344,7 +2387,7 @@ extern "C" NBodyStatus_int nbCUDALaunchSort(struct NBodyCUDABuffers* buffers,
      * per-metric divergence (different warp body groupings → different
      * accept-vote outcomes → different per-body forces). Identity is
      * the deterministic baseline. */
-    nbCUDASortIdentityKernel<<<grid, block>>>(buffers->d_sort, nbody);
+    NB_LAUNCH(nbCUDASortIdentityKernel, grid, block, buffers->d_sort, nbody);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
         fprintf(stderr, "[nbody_cuda] sortIdentity launch: %s\n", cudaGetErrorString(e));
@@ -2372,7 +2415,8 @@ extern "C" NBodyStatus_int nbCUDALaunchSort(struct NBodyCUDABuffers* buffers,
  * branch is taken throughout (see translation table). */
 #define NBODY_CUDA_LOCK (-2)
 
-__global__ void nbCUDABuildTreeKernel(double* __restrict__ d_posX,
+#if !defined(NBODY_CUDA_DRIVER_API)  /* device code: excluded from MinGW host pass */
+extern "C" __global__ void nbCUDABuildTreeKernel(double* __restrict__ d_posX,
                                       double* __restrict__ d_posY,
                                       double* __restrict__ d_posZ,
                                       double* __restrict__ d_critRadii,
@@ -2631,6 +2675,7 @@ __global__ void nbCUDABuildTreeKernel(double* __restrict__ d_posX,
 
     atomicMax(&d_treeStatus->maxDepth, localMaxDepth);
 }
+#endif /* !NBODY_CUDA_DRIVER_API (device code) */
 
 extern "C" NBodyStatus_int nbCUDALaunchBuildTree(struct NBodyCUDABuffers* buffers,
                                                  int nbody,
@@ -2646,10 +2691,22 @@ extern "C" NBodyStatus_int nbCUDALaunchBuildTree(struct NBodyCUDABuffers* buffer
      * bestLikelihood eval) to remain deterministic. */
     {
         static int useMortonCached = -1;
+#ifdef NBODY_CUDA_DRIVER_API
+        /* TODO(win-sort): flip to Morton default once nbWinRadixSortPairs
+         * lands. Until then the driver-API build uses the legacy
+         * builder (bit-identical results, verified). */
+        if (useMortonCached < 0) {
+            const char* env = getenv("NBODY_BUILDTREE_MORTON");
+            useMortonCached = (env && env[0] == '1') ? 1 : 0;
+            if (!useMortonCached)
+                fprintf(stderr, "[nbody_cuda_win] legacy buildTree (Morton pending custom sort)\n");
+        }
+#else
         if (useMortonCached < 0) {
             const char* env = getenv("NBODY_BUILDTREE_MORTON");
             useMortonCached = (env && env[0] == '0') ? 0 : 1;
         }
+#endif
         if (useMortonCached) {
             return nbCUDABuildTreeMorton(buffers, nbody, nNode);
         }
@@ -2660,7 +2717,7 @@ extern "C" NBodyStatus_int nbCUDALaunchBuildTree(struct NBodyCUDABuffers* buffer
     int grid = 2 * (buffers->numSMs > 0 ? buffers->numSMs : 1);
     if (grid < 1) grid = 1;
 
-    nbCUDABuildTreeKernel<<<grid, block>>>(buffers->d_posX,
+    NB_LAUNCH(nbCUDABuildTreeKernel, grid, block, buffers->d_posX,
                                            buffers->d_posY,
                                            buffers->d_posZ,
                                            buffers->d_critRadii,
@@ -2689,7 +2746,8 @@ extern "C" NBodyStatus_int nbCUDALaunchBuildTree(struct NBodyCUDABuffers* buffer
  * NNODE) so leaves' parents can finish quickly.
  *
  * Mirrors nbody_kernels.cl:1299-1510. */
-__global__ void nbCUDASummarizationKernel(double* __restrict__ d_posX,
+#if !defined(NBODY_CUDA_DRIVER_API)  /* device code: excluded from MinGW host pass */
+extern "C" __global__ void nbCUDASummarizationKernel(double* __restrict__ d_posX,
                                           double* __restrict__ d_posY,
                                           double* __restrict__ d_posZ,
                                           double* __restrict__ d_masses,
@@ -2909,6 +2967,7 @@ __global__ void nbCUDASummarizationKernel(double* __restrict__ d_posX,
         }
     }
 }
+#endif /* !NBODY_CUDA_DRIVER_API (device code) */
 
 extern "C" NBodyStatus_int nbCUDALaunchSummarization(struct NBodyCUDABuffers* buffers,
                                                      int nbody,
@@ -2924,7 +2983,7 @@ extern "C" NBodyStatus_int nbCUDALaunchSummarization(struct NBodyCUDABuffers* bu
     /* TODO: thread theta through from NBodyCtx */
     const double theta = 1.0;
 
-    nbCUDASummarizationKernel<<<grid, block>>>(buffers->d_posX,
+    NB_LAUNCH(nbCUDASummarizationKernel, grid, block, buffers->d_posX,
                                                buffers->d_posY,
                                                buffers->d_posZ,
                                                buffers->d_masses,
@@ -2952,6 +3011,7 @@ extern "C" NBodyStatus_int nbCUDALaunchSummarization(struct NBodyCUDABuffers* bu
  * descendants' moments are folded in. */
 
 /* Add 6 components of symmetric quadrupole tensor in place. */
+#if !defined(NBODY_CUDA_DRIVER_API)  /* device code: excluded from MinGW host pass */
 __device__ __forceinline__ void incAddQuadMatrix(double* xx, double* xy, double* xz,
                                                  double* yy, double* yz, double* zz,
                                                  double bxx, double bxy, double bxz,
@@ -2987,7 +3047,7 @@ __device__ __forceinline__ void quadCalc(double* qxx, double* qxy, double* qxz,
     *qzz = chw * (3.0 * (drz * drz) - drSq);
 }
 
-__global__ void nbCUDAQuadMomentsKernel(double* __restrict__ d_posX,
+extern "C" __global__ void nbCUDAQuadMomentsKernel(double* __restrict__ d_posX,
                                         double* __restrict__ d_posY,
                                         double* __restrict__ d_posZ,
                                         double* __restrict__ d_masses,
@@ -3192,6 +3252,7 @@ __global__ void nbCUDAQuadMomentsKernel(double* __restrict__ d_posX,
         }
     }
 }
+#endif /* !NBODY_CUDA_DRIVER_API (device code) */
 
 extern "C" NBodyStatus_int nbCUDALaunchQuadMoments(struct NBodyCUDABuffers* buffers,
                                                    int nNode)
@@ -3202,7 +3263,7 @@ extern "C" NBodyStatus_int nbCUDALaunchQuadMoments(struct NBodyCUDABuffers* buff
     int grid = 2 * (buffers->numSMs > 0 ? buffers->numSMs : 1);
     if (grid < 1) grid = 1;
 
-    nbCUDAQuadMomentsKernel<<<grid, block>>>(buffers->d_posX,
+    NB_LAUNCH(nbCUDAQuadMomentsKernel, grid, block, buffers->d_posX,
                                              buffers->d_posY,
                                              buffers->d_posZ,
                                              buffers->d_masses,
@@ -3241,7 +3302,8 @@ extern "C" NBodyStatus_int nbCUDALaunchQuadMoments(struct NBodyCUDABuffers* buff
  * (k < nbody), d_critRadii[k] is 0 and d_quad** is NaN — we zero
  * those to keep ForceTree's NaN check from spuriously rejecting body
  * cases that go through the same code path. */
-__global__ void nbCUDACellPackKernel(
+#if !defined(NBODY_CUDA_DRIVER_API)  /* device code: excluded from MinGW host pass */
+extern "C" __global__ void nbCUDACellPackKernel(
     const double* __restrict__ d_posX,
     const double* __restrict__ d_posY,
     const double* __restrict__ d_posZ,
@@ -3293,6 +3355,7 @@ __global__ void nbCUDACellPackKernel(
     d_cellPacked[o + 14] = 0.0;
     d_cellPacked[o + 15] = 0.0;
 }
+#endif /* !NBODY_CUDA_DRIVER_API (device code) */
 
 extern "C" NBodyStatus_int nbCUDALaunchCellPack(struct NBodyCUDABuffers* buffers,
                                                 int nNode)
@@ -3310,7 +3373,7 @@ extern "C" NBodyStatus_int nbCUDALaunchCellPack(struct NBodyCUDABuffers* buffers
     }
     const int block = NBODY_CUDA_BLOCK;
     const int grid  = (nNode + 1 + block - 1) / block;
-    nbCUDACellPackKernel<<<grid, block>>>(buffers->d_posX,
+    NB_LAUNCH(nbCUDACellPackKernel, grid, block, buffers->d_posX,
                                            buffers->d_posY,
                                            buffers->d_posZ,
                                            buffers->d_masses,
@@ -3337,6 +3400,7 @@ extern "C" NBodyStatus_int nbCUDALaunchCellPack(struct NBodyCUDABuffers* buffers
  * runtime `branch` value against these. Defined here (before Phase 5)
  * so the force-tree kernel can reference them; the Phase 2 section
  * below uses the same constants. */
+#if !defined(NBODY_CUDA_DRIVER_API)  /* device code: excluded from MinGW host pass */
 __device__ __constant__ double kFullKickBranch  = -125.0;
 __device__ __constant__ double kSecondHalfBranch = -1024.0;
 
@@ -3368,7 +3432,7 @@ __device__ __constant__ double kSecondHalfBranch = -1024.0;
  * stack arrays are always allocated but only loaded/used when the flag
  * is set. USE_EXTERNAL_POTENTIAL is dropped — that lives in Phase 5b. */
 
-__global__
+extern "C" __global__
 void nbCUDAForceTreeKernel(
     const double* __restrict__ d_posX,
     const double* __restrict__ d_posY,
@@ -3780,6 +3844,7 @@ void nbCUDAForceTreeKernel(
         k += stride;
     }
 }
+#endif /* !NBODY_CUDA_DRIVER_API (device code) */
 
 extern "C" NBodyStatus_int nbCUDALaunchForceTree(struct NBodyCUDABuffers* buffers,
                                                  int nbody,
@@ -3812,7 +3877,7 @@ extern "C" NBodyStatus_int nbCUDALaunchForceTree(struct NBodyCUDABuffers* buffer
 
     const double branch = (double) (int) phase;  /* preserves wire encoding */
 
-    nbCUDAForceTreeKernel<<<grid, block>>>(buffers->d_posX,
+    NB_LAUNCH(nbCUDAForceTreeKernel, grid, block, buffers->d_posX,
                                            buffers->d_posY,
                                            buffers->d_posZ,
                                            buffers->d_masses,
@@ -3866,6 +3931,7 @@ extern "C" NBodyStatus_int nbCUDALaunchForceTree(struct NBodyCUDABuffers* buffer
 /* Spherical (bulge) models.
  * Hernquist:  acc = -mass / (r * (a + r)^2) * pos
  * Plummer:    acc = -mass / (a^2 + r^2)^(3/2) * pos    */
+#if !defined(NBODY_CUDA_DRIVER_API)  /* device code: excluded from MinGW host pass */
 __device__ __forceinline__ void nbCUDAAccelHernquistSphere(
     double px, double py, double pz, double r,
     double mass, double scale,
@@ -4055,7 +4121,7 @@ __device__ __forceinline__ void nbCUDAAccelPlummerLMC(
     *az += dz * c;
 }
 
-__global__ void nbCUDAExternalPotentialKernel(
+extern "C" __global__ void nbCUDAExternalPotentialKernel(
     const double* __restrict__ d_posX,
     const double* __restrict__ d_posY,
     const double* __restrict__ d_posZ,
@@ -4181,6 +4247,7 @@ __global__ void nbCUDAExternalPotentialKernel(
         d_accZ[i] += az;
     }
 }
+#endif /* !NBODY_CUDA_DRIVER_API (device code) */
 
 extern "C" NBodyStatus_int nbCUDALaunchExternalPotential(
     struct NBodyCUDABuffers* buffers,
@@ -4205,7 +4272,7 @@ extern "C" NBodyStatus_int nbCUDALaunchExternalPotential(
     const int block = NBODY_CUDA_BLOCK;
     const int grid  = (nbody + block - 1) / block;
 
-    nbCUDAExternalPotentialKernel<<<grid, block>>>(
+    NB_LAUNCH(nbCUDAExternalPotentialKernel, grid, block, 
         buffers->d_posX, buffers->d_posY, buffers->d_posZ,
         buffers->d_accX, buffers->d_accY, buffers->d_accZ,
         nbody,
@@ -4241,7 +4308,8 @@ extern "C" NBodyStatus_int nbCUDALaunchExternalPotential(
  * gridDim.x*blockDim.x so the same kernel works for nbody >> launched
  * threads if a future caller wants to cap occupancy. Mirrors
  * nbody_kernels.cl:2366-2428 line-for-line in arithmetic. */
-__global__ void nbCUDAIntegrationKernel(double* __restrict__ d_posX,
+#if !defined(NBODY_CUDA_DRIVER_API)  /* device code: excluded from MinGW host pass */
+extern "C" __global__ void nbCUDAIntegrationKernel(double* __restrict__ d_posX,
                                         double* __restrict__ d_posY,
                                         double* __restrict__ d_posZ,
                                         double* __restrict__ d_velX,
@@ -4318,6 +4386,7 @@ __global__ void nbCUDAIntegrationKernel(double* __restrict__ d_posX,
         d_velZ[i] = vz;
     }
 }
+#endif /* !NBODY_CUDA_DRIVER_API (device code) */
 
 extern "C" NBodyStatus_int nbCUDALaunchIntegration(struct NBodyCUDABuffers* buffers,
                                                    double timestep,
@@ -4336,7 +4405,7 @@ extern "C" NBodyStatus_int nbCUDALaunchIntegration(struct NBodyCUDABuffers* buff
     const int grid  = (nbody + block - 1) / block;
     const double branch = (double) (int) phase;  /* preserves the magic encoding */
 
-    nbCUDAIntegrationKernel<<<grid, block>>>(buffers->d_posX,
+    NB_LAUNCH(nbCUDAIntegrationKernel, grid, block, buffers->d_posX,
                                              buffers->d_posY,
                                              buffers->d_posZ,
                                              buffers->d_velX,
