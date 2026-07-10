@@ -208,6 +208,10 @@ endif()
 if(NBODY_CUDA OR NBODY_HIP)
   list(APPEND nbody_lib_src ${NBODY_SRC_DIR}/nbody_cuda.cu
                             ${NBODY_SRC_DIR}/nbody_cuda_host.c)
+  if(NBODY_CUDA_WIN)
+    list(APPEND nbody_lib_src ${NBODY_SRC_DIR}/nbody_cuda_driver_runtime.cpp
+                              ${NBODY_SRC_DIR}/nbody_cuda_win_sort.cpp)
+  endif()
   list(APPEND nbody_lib_headers ${NBODY_INCLUDE_DIR}/nbody_cuda.h
                                 ${NBODY_INCLUDE_DIR}/nbody_cuda_buffers.h
                                 ${NBODY_INCLUDE_DIR}/nbody_cuda_host.h)
@@ -305,7 +309,19 @@ if(NBODY_OPENCL)
   list(APPEND nbody_link_libs ${OPENCL_LIBRARIES} nbody_kernels)
 endif()
 
-if(NBODY_CUDA)
+if(NBODY_CUDA_WIN)
+  # Driver-API cross build: the .cu is compiled as plain C++ by the
+  # MinGW toolchain (kernels excluded via NBODY_CUDA_DRIVER_API guards;
+  # they live in the embedded fatbin instead).
+  set_source_files_properties(${NBODY_SRC_DIR}/nbody_cuda.cu
+                              PROPERTIES LANGUAGE CXX
+                                         COMPILE_OPTIONS "-x;c++")
+  # NBODY_CUDA_WIN_INCLUDE: cuda.h dir + generated fatbin header dir.
+  # NBODY_CUDA_WIN_NVCUDA:  dlltool-generated nvcuda.dll import lib.
+  # Both are passed by build_cuda_win.sh.
+  include_directories(${NBODY_CUDA_WIN_INCLUDE})
+  list(APPEND nbody_link_libs ${NBODY_CUDA_WIN_NVCUDA})
+elseif(NBODY_CUDA)
   # Tag the .cu source so cmake routes it through nvcc.
   set_source_files_properties(${NBODY_SRC_DIR}/nbody_cuda.cu
                               PROPERTIES LANGUAGE CUDA)
