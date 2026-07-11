@@ -31,6 +31,7 @@
 #include "nbody_potential.h"
 #include "nbody_plain.h"
 #include "nbody_likelihood.h"
+#include "nbody_cuda_buffers.h"
 #include "nbody_histogram.h"
 #include "nbody_types.h"
 
@@ -432,6 +433,10 @@ static NBodyStatus nbReportResults(const NBodyCtx* ctx, const NBodyState* st, co
 
 int nbMain(const NBodyFlags* nbf)
 {
+#if NBODY_CUDA
+    if (nbf->useCUDA) nbCUDAPhase1Enable = 1;
+#endif
+
     NBodyCtx* ctx = &_ctx;
     NBodyState* st = &_st;
     CLRequest clr;

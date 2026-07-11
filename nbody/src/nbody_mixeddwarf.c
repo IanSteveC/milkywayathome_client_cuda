@@ -36,6 +36,7 @@ their copyright to their programs which execute similar algorithms.
 #include "nbody_potential_types.h"
 #include "nbody_io.h"
 #include "nbody_king_model.h"
+#include "nbody_cuda_buffers.h"
 
 /*Note: minusfivehalves(x) raises to x^-5/2 power and minushalf(x) is x^-1/2*/
 
@@ -90,6 +91,8 @@ static inline real second_derivative(real (*func)(const Dwarf*, real), real x, c
     real deriv = (p1 + p2 + p3 + p4 + p5) * denom;
     return deriv;
 }
+
+static real fun(real ri, const Dwarf* comp1, const Dwarf* comp2, real energy, mwbool isDark);
 
 static real gauss_quad(real (*func)(real, const Dwarf*, const Dwarf*, real, mwbool), real lower, real upper, const Dwarf* comp1, const Dwarf* comp2, real energy, mwbool isDark)
 {
@@ -205,6 +208,31 @@ static real gauss_quad(real (*func)(real, const Dwarf*, const Dwarf*, real, mwbo
      * is independent of thread count and schedule. */
     real* fv = (real*) malloc((size_t) nIter * 3 * sizeof(real));
     if (!fv) { free(nx); return 0.0; }
+    int offloaded = 0;
+#if NBODY_CUDA
+    /* GPU offload (bit-exact device port). Gated to the GPU app, the
+     * dwarf integrand, and model types the device graph supports.
+     * NaN results = atan accurate-phase nodes; recompute those on CPU. */
+    if (nbCUDAPhase1Enable && func == fun
+        && comp1->type != King && comp2->type != King)
+    {
+        double* xs = (double*) malloc((size_t) nIter * 3 * sizeof(double));
+        if (xs)
+        {
+            for (int gi = 0; gi < 3 * nIter; ++gi)
+                xs[gi] = nx[4*(gi/3) + (gi%3)];
+            if (nbCUDAPhase1Eval(xs, 3 * nIter, comp1, comp2, energy, isDark, fv) == 0)
+            {
+                offloaded = 1;
+                for (int gi = 0; gi < 3 * nIter; ++gi)
+                    if (isnan(fv[gi]))
+                        fv[gi] = (*func)(xs[gi], comp1, comp2, energy, isDark);
+            }
+            free(xs);
+        }
+    }
+#endif
+    if (!offloaded)
     {
         int gi;
       #pragma omp parallel for schedule(static)

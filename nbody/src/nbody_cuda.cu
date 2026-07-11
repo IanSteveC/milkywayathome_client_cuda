@@ -1627,6 +1627,79 @@ extern "C" NBodyStatus_int nbCUDALaunchBuildTreeClear(struct NBodyCUDABuffers* b
  * the result as a (lo, hi) pair packed into 128 bits. Linear loop
  * is fine — called once per body per step, parallel across 40K
  * threads, so per-build cost is in the µs range. */
+
+/* ----- Phase-1 GPU offload: integrand evaluation for gauss_quad -----
+ * Machine-generated bit-exact port of the CPU integrand call graph
+ * (fun -> potentials/densities -> incomplete gamma -> stencils); see
+ * nbody_cuda_phase1_integrand.h. atan's rare accurate phase surfaces
+ * as NaN; the caller recomputes those nodes on the CPU. Validated
+ * 400k-point bit-compare vs host. */
+#if !defined(NBODY_CUDA_DRIVER_API)
+#include "nbody_cuda_crlibm_exp.cuh"
+#include "nbody_cuda_crlibm_atan.cuh"
+static __device__ double nb_p1_atan(double x){ int u=0; double v=cuda_crlibm_atan_rn(x,&u); return u ? nan("") : v; }
+namespace nbp1 {
+#define NB_P1_QUAL __device__
+#define fprintf(f, ...) printf(__VA_ARGS__)
+#define stderr 0
+#define set_model_params(x) ((void)0)
+#define boinc_finish(x) ((void)0)
+#define pow_rn  cuda_crlibm_pow_rn
+#define log_rn  cuda_crlibm_log_rn
+#define exp_rn  cuda_crlibm_exp_rn
+#define atan_rn nb_p1_atan
+#include "nbody_cuda_phase1_integrand.h"
+#undef atan_rn
+#undef exp_rn
+#undef log_rn
+#undef pow_rn
+#undef boinc_finish
+#undef set_model_params
+#undef stderr
+#undef fprintf
+#undef NB_P1_QUAL
+}
+
+extern "C" __global__ void nbCUDAPhase1FunKernel(
+    const double* __restrict__ xs, int n,
+    nbp1::Dwarf c1, nbp1::Dwarf c2, double energy, int isDark,
+    double* __restrict__ out)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = nbp1::fun(xs[i], &c1, &c2, energy, isDark);
+}
+
+/* set from nbMain when the app runs with --use-gpu */
+extern "C" { int nbCUDAPhase1Enable = 0; }
+
+extern "C" int nbCUDAPhase1Eval(const double* xs, int n,
+                                const void* c1, const void* c2,
+                                double energy, int isDark, double* out)
+{
+    static double* d_x = NULL; static double* d_o = NULL; static int cap = 0; static int broken = 0;
+    if (broken || n <= 0) return -1;
+    if (n > cap) {
+        if (d_x) cudaFree(d_x);
+        if (d_o) cudaFree(d_o);
+        cap = n * 2 + 256;
+        if (cudaMalloc((void**)&d_x, (size_t)cap*8) != cudaSuccess ||
+            cudaMalloc((void**)&d_o, (size_t)cap*8) != cudaSuccess) { broken = 1; return -1; }
+    }
+    if (cudaMemcpy(d_x, xs, (size_t)n*8, cudaMemcpyHostToDevice) != cudaSuccess) { broken = 1; return -1; }
+    nbp1::Dwarf a, b;
+    memcpy(&a, c1, sizeof(a)); memcpy(&b, c2, sizeof(b));
+    nbCUDAPhase1FunKernel<<<(n+255)/256, 256>>>(d_x, n, a, b, energy, isDark, d_o);
+    if (cudaGetLastError() != cudaSuccess) { broken = 1; return -1; }
+    if (cudaMemcpy(out, d_o, (size_t)n*8, cudaMemcpyDeviceToHost) != cudaSuccess) { broken = 1; return -1; }
+    return 0;
+}
+#else
+extern "C" { int nbCUDAPhase1Enable = 0; }
+extern "C" int nbCUDAPhase1Eval(const double* xs, int n, const void* c1, const void* c2,
+                                double energy, int isDark, double* out)
+{ (void)xs;(void)n;(void)c1;(void)c2;(void)energy;(void)isDark;(void)out; return -1; }
+#endif
+
 #if !defined(NBODY_CUDA_DRIVER_API)  /* device code: excluded from MinGW host pass */
 /* ----- Windows driver-API stable radix sort (CUB replacement) -----
  * LSD radix sort over the full 128-bit Morton key, 16 passes of 8 bits,

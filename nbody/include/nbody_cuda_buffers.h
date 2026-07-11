@@ -42,6 +42,14 @@ extern "C" {
  * the value computed via nbCUDABuffersComputeNNode(). Then call
  * nbCUDATreeBuffersAlloc to attach the supporting tree-side scratch
  * (start, count, child, etc.). */
+/* Phase-1 GPU offload of gauss_quad integrand evaluation.
+ * Enable flag is set by nbMain when running with --use-gpu; Eval
+ * returns 0 on success (out[] filled; NaN entries = recompute on CPU),
+ * nonzero -> caller must use the CPU path. */
+extern int nbCUDAPhase1Enable;
+int nbCUDAPhase1Eval(const double* xs, int n, const void* comp1, const void* comp2,
+                     double energy, int isDark, double* out);
+
 NBodyStatus_int nbCUDABuffersAlloc(struct NBodyCUDABuffers** outBuffers,
                                    int nbody,
                                    int nNode);
