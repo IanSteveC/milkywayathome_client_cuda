@@ -95,6 +95,13 @@ static real gauss_quad(real (*func)(real, const Dwarf*, const Dwarf*, real, mwbo
 {
     /*This is a guassian quadrature routine. It will test to always integrate from the lower to higher of the two limits.
      * If switching the order of the limits was needed to do this then the negative of the integral is returned.
+     *
+     * Restructured for parallel evaluation: the node positions are
+     * enumerated first with EXACTLY the same arithmetic the original
+     * sequential loop used, the (pure) integrand is then evaluated at
+     * every node in parallel, and finally the partial terms are
+     * accumulated in the original order. Bit-identical to the
+     * sequential version for any thread count; only wall time changes.
      */
     real intv = 0.0;//initial value of integral
     real a = 0.0, b = 0.0;
@@ -130,12 +137,25 @@ static real gauss_quad(real (*func)(real, const Dwarf*, const Dwarf*, real, mwbo
     real x2n = (coef2);
     real x3n = (coef1 * x3 + coef2);
     int counter = 0;
+
+    /* ---- pass 1: enumerate nodes (same arithmetic, no evaluations) ---- */
+    int cap = 1024, nIter = 0;
+    real* nx = (real*) malloc((size_t) cap * 4 * sizeof(real));
+    if (!nx) return 0.0;
     while (1)
     {
-                //gauss quad
-        intv = intv + c1 * (*func)(x1n, comp1, comp2, energy, isDark) * coef1 +
-                      c2 * (*func)(x2n, comp1, comp2, energy, isDark) * coef1 + 
-                      c3 * (*func)(x3n, comp1, comp2, energy, isDark) * coef1;
+        if (nIter == cap)
+        {
+            cap *= 2;
+            real* nx2 = (real*) realloc(nx, (size_t) cap * 4 * sizeof(real));
+            if (!nx2) { free(nx); return 0.0; }
+            nx = nx2;
+        }
+        nx[4*nIter + 0] = x1n;
+        nx[4*nIter + 1] = x2n;
+        nx[4*nIter + 2] = x3n;
+        nx[4*nIter + 3] = coef1;
+        nIter++;
 
         lowerg = upperg;
         upperg = upperg + hg;
@@ -179,6 +199,31 @@ static real gauss_quad(real (*func)(real, const Dwarf*, const Dwarf*, real, mwbo
 
 
     }
+
+    /* ---- pass 2: evaluate the integrand at all nodes in parallel ----
+     * (*func) is pure; results land in per-node slots, so the outcome
+     * is independent of thread count and schedule. */
+    real* fv = (real*) malloc((size_t) nIter * 3 * sizeof(real));
+    if (!fv) { free(nx); return 0.0; }
+    {
+        int gi;
+      #pragma omp parallel for schedule(static)
+        for (gi = 0; gi < 3 * nIter; ++gi)
+        {
+            fv[gi] = (*func)(nx[4*(gi/3) + (gi%3)], comp1, comp2, energy, isDark);
+        }
+    }
+
+    /* ---- pass 3: accumulate in the original sequential order ---- */
+    for (int it = 0; it < nIter; ++it)
+    {
+        real cf = nx[4*it + 3];
+        intv = intv + c1 * fv[3*it + 0] * cf +
+                      c2 * fv[3*it + 1] * cf + 
+                      c3 * fv[3*it + 2] * cf;
+    }
+    free(fv);
+    free(nx);
 
     if(lower > upper)
     {
