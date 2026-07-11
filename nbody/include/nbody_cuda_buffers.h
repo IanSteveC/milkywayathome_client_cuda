@@ -47,6 +47,7 @@ extern "C" {
  * returns 0 on success (out[] filled; NaN entries = recompute on CPU),
  * nonzero -> caller must use the CPU path. */
 extern int nbCUDAPhase1Enable;
+extern int nbCUDAPhase1Force;   /* -1 default(GPU), 1 on, 0 off (--phase1-gpu) */
 int nbCUDAPhase1Eval(const double* xs, int n, const void* comp1, const void* comp2,
                      double energy, int isDark, double* out);
 

@@ -37,9 +37,6 @@ their copyright to their programs which execute similar algorithms.
 #include "nbody_io.h"
 #include "nbody_king_model.h"
 #include "nbody_cuda_buffers.h"
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 /*Note: minusfivehalves(x) raises to x^-5/2 power and minushalf(x) is x^-1/2*/
 

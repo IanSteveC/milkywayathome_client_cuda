@@ -1767,6 +1767,7 @@ extern "C" __global__ void nbCUDAPhase1FunKernel(
 
 /* set from nbMain when the app runs with --use-gpu */
 extern "C" { int nbCUDAPhase1Enable = 0; }
+extern "C" { int nbCUDAPhase1Force = -1; }
 
 extern "C" int nbCUDAPhase1Eval(const double* xs, int n,
                                 const void* c1, const void* c2,
@@ -1776,23 +1777,22 @@ extern "C" int nbCUDAPhase1Eval(const double* xs, int n,
     static int policy = -2;   /* -2 undecided, 0 declined, 1 offload */
     if (policy == -2)
     {
-        const char* env = getenv("NBODY_PHASE1_GPU");
-        if (env && env[0] == '1')      policy = 1;
-        else if (env && env[0] == '0') policy = 0;
+        if (nbCUDAPhase1Force == 1)
+        {
+            policy = 1;
+            fprintf(stderr, "[nbody] phase-1 GPU offload forced on (--phase1-gpu=1)\n");
+        }
+        else if (nbCUDAPhase1Force == 0)
+        {
+            policy = 0;
+            fprintf(stderr, "[nbody] phase-1 GPU offload forced off (--phase1-gpu=0)\n");
+        }
         else
         {
-#if defined(__HIP__)
-            /* RDNA (wave32) has 1/16-rate FP64: the CPU OpenMP path is
-             * faster there (measured 273s GPU vs 244s CPU on RX 6800
-             * XT). CDNA/Vega (wave64) has full-rate FP64: offload. */
-            struct cudaDeviceProp p1prop;
-            policy = (cudaGetDeviceProperties(&p1prop, 0) == cudaSuccess
-                      && p1prop.warpSize == 64) ? 1 : 0;
-#else
-            policy = 1;   /* CUDA: block kernel beats CPU (70s vs 244s) */
-#endif
-            if (!policy)
-                fprintf(stderr, "[nbody] phase-1 GPU offload disabled for this device (override: NBODY_PHASE1_GPU=1)\n");
+            /* GPU is the default everywhere, including RDNA (slower in
+             * wall-clock at 4+ CPU threads, but a GPU app should leave
+             * the CPU free); --phase1-gpu=0 selects the CPU path. */
+            policy = 1;
         }
     }
     if (policy != 1) return -1;
@@ -1817,14 +1817,18 @@ extern "C" int nbCUDAPhase1Eval(const double* xs, int n,
  * Dwarf structs are passed as raw parameter bytes (cuLaunchKernel
  * reads sizes from kernel metadata), so no device-type mirror needed. */
 extern "C" { int nbCUDAPhase1Enable = 0; }
+extern "C" { int nbCUDAPhase1Force = -1; }
 extern "C" int nbCUDAPhase1Eval(const double* xs, int n, const void* c1, const void* c2,
                                 double energy, int isDark, double* out)
 {
     static CUdeviceptr d_x = 0, d_o = 0; static int cap = 0; static int broken = 0;
     static int policy = -2;
     if (policy == -2) {
-        const char* env = getenv("NBODY_PHASE1_GPU");
-        policy = (env && env[0] == '0') ? 0 : 1;   /* CUDA: default on */
+        policy = (nbCUDAPhase1Force == 0) ? 0 : 1;   /* CUDA: default on */
+        if (nbCUDAPhase1Force == 1)
+            fprintf(stderr, "[nbody] phase-1 GPU offload forced on (--phase1-gpu=1)\n");
+        else if (nbCUDAPhase1Force == 0)
+            fprintf(stderr, "[nbody] phase-1 GPU offload forced off (--phase1-gpu=0)\n");
     }
     if (policy != 1 || broken || n <= 0) return -1;
     if (nbCudaLoadModule()) { broken = 1; return -1; }

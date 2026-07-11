@@ -77,7 +77,8 @@ typedef struct
 
     int debugLuaLibs;   /* Open IO libraries etc. */
     int noCL;
-    int useCUDA;        /* Run nbody on the CUDA device when built with NBODY_CUDA */
+    int useCUDA;
+    int phase1GPU;      /* -1 auto (default), 1 force GPU phase-1, 0 force CPU */        /* Run nbody on the CUDA device when built with NBODY_CUDA */
     int reportProgress;
     int ignoreResponsive;
     int noCleanCheckpoint;

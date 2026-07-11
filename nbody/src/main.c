@@ -204,6 +204,7 @@ static mwbool nbReadParameters(const int argc, const char* argv[], NBodyFlags* n
     static int version = FALSE;
     static int copyright = FALSE;
     static NBodyFlags nbf = EMPTY_NBODY_FLAGS;
+    nbf.phase1GPU = -1;   /* auto */
     static unsigned int numParams = 0, params = 0;
 
     /* FIXME: There's a small leak of the inputFile from use of
@@ -397,6 +398,12 @@ static mwbool nbReadParameters(const int argc, const char* argv[], NBodyFlags* n
             "disable-opencl", '\0',
             POPT_ARG_NONE, &nbf.noCL,
             0, "Use normal CPU path instead of OpenCL. No effect if not built with OpenCL", NULL
+        },
+
+        {
+            "phase1-gpu", '\0',
+            POPT_ARG_INT, &nbf.phase1GPU,
+            0, "Body-generation setup on GPU: 1=force on, 0=force off (default: auto by device)", NULL
         },
 
         {

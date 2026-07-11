@@ -435,6 +435,7 @@ int nbMain(const NBodyFlags* nbf)
 {
 #if NBODY_CUDA
     if (nbf->useCUDA) nbCUDAPhase1Enable = 1;
+    nbCUDAPhase1Force = nbf->phase1GPU;
 #endif
 
     NBodyCtx* ctx = &_ctx;
