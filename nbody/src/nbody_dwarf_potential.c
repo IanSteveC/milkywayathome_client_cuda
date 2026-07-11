@@ -74,6 +74,7 @@ static real nfw_den(const Dwarf* model, real r)                                 
 #pragma GCC diagnostic ignored "-Wfloat-equal"
     if (rcut != 0.0) {                                                                                                   //
 #pragma GCC diagnostic pop
+        const real pcut = model->pcut;                                                                                   //
         const real rdecay = model->rdecay;                                                                               //
         const real delta = model->delta;                                                                                 //
         if (r > rcut) {                                                                                                  //
@@ -98,7 +99,6 @@ static real nfw_pot(const Dwarf* model, real r)                                 
     if (rcut != 0.0) {                                                                                                   //
 #pragma GCC diagnostic pop
         const real rdecay = model->rdecay;                                                                               //
-        const real pcut = model->pcut;                                                                                   //
         const real delta = model->delta;                                                                                 //
         const real m_nfw_cut = model->m_nfw_cut;                                                                         //
         const real gamma1 = model->gamma1;                                                                               //
@@ -222,7 +222,6 @@ static real cored_pot(const Dwarf* model, real r)                               
 #pragma GCC diagnostic ignored "-Wfloat-equal"
     if (rcut != 0.0 && r > rcut)                                                                                         //
     {                                                                                                                    //
-        const real pcut = model->pcut;                                                                                   //
         const real delta = model->delta;                                                                                 //
         const real rdecay = model->rdecay;                                                                               //
         const real gamma1 = model->gamma1;                                                                               //
