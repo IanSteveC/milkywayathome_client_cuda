@@ -501,19 +501,72 @@ NB_P1_QUAL static inline real second_derivative(real (*func)(const Dwarf*, real)
     return deriv;
 }
 
+/* devirtualized stencils (direct calls -> inlinable on device) */
+NB_P1_QUAL real first_derivative_pot( real x, const Dwarf* comp1)
+{
+    const real h = 0.001;
+    real p1 = 1.0 * get_potential(comp1, (x - 2.0 * h));
+    real p2 = - 8.0 * get_potential(comp1, (x - h) );
+    real p3 = - 1.0 * get_potential(comp1, (x + 2.0 * h));
+    real p4 = 8.0 * get_potential(comp1, (x + h));
+    real denom = ((real) 1.0 / (12.0 * h));
+    real deriv = (p1 + p2 + p3 + p4) * denom;
+    return deriv;
+}
+
+NB_P1_QUAL real first_derivative_den( real x, const Dwarf* comp1)
+{
+    const real h = 0.001;
+    real p1 = 1.0 * get_density(comp1, (x - 2.0 * h));
+    real p2 = - 8.0 * get_density(comp1, (x - h) );
+    real p3 = - 1.0 * get_density(comp1, (x + 2.0 * h));
+    real p4 = 8.0 * get_density(comp1, (x + h));
+    real denom = ((real) 1.0 / (12.0 * h));
+    real deriv = (p1 + p2 + p3 + p4) * denom;
+    return deriv;
+}
+
+NB_P1_QUAL static inline real second_derivative_pot( real x, const Dwarf* comp1)
+{
+    const real h = 0.001;
+    real p1 = - 1.0 * get_potential(comp1, (x + 2.0 * h));
+    real p2 = 16.0 * get_potential(comp1, (x + h));
+    real p3 = -30.0 * get_potential(comp1, (x));
+    real p4 = 16.0 * get_potential(comp1, (x - h));
+    real p5 = - 1.0 * get_potential(comp1, (x - 2.0 * h));
+    real denom = ((real) 1.0 / (12.0 * h * h));
+    real deriv = (p1 + p2 + p3 + p4 + p5) * denom;
+    return deriv;
+}
+
+NB_P1_QUAL static inline real second_derivative_den( real x, const Dwarf* comp1)
+{
+    const real h = 0.001;
+    real p1 = - 1.0 * get_density(comp1, (x + 2.0 * h));
+    real p2 = 16.0 * get_density(comp1, (x + h));
+    real p3 = -30.0 * get_density(comp1, (x));
+    real p4 = 16.0 * get_density(comp1, (x - h));
+    real p5 = - 1.0 * get_density(comp1, (x - 2.0 * h));
+    real denom = ((real) 1.0 / (12.0 * h * h));
+    real deriv = (p1 + p2 + p3 + p4 + p5) * denom;
+    return deriv;
+}
+
+
+
 NB_P1_QUAL static real fun(real ri, const Dwarf* comp1, const Dwarf* comp2, real energy, mwbool isDark)
 {
     real first_deriv_density = 0.0;
     real second_deriv_density = 0.0;
     real denominator = 0.0;
-    real first_deriv_psi = first_derivative(get_potential, ri, comp1) + first_derivative(get_potential, ri, comp2);
-    real second_deriv_psi = second_derivative(get_potential, ri, comp1) + second_derivative(get_potential, ri, comp2);
+    real first_deriv_psi = first_derivative_pot( ri, comp1) + first_derivative_pot( ri, comp2);
+    real second_deriv_psi = second_derivative_pot( ri, comp1) + second_derivative_pot( ri, comp2);
     if (!isDark) {
-        first_deriv_density = first_derivative(get_density, ri, comp1);
-        second_deriv_density = second_derivative(get_density, ri, comp1);
+        first_deriv_density = first_derivative_den( ri, comp1);
+        second_deriv_density = second_derivative_den( ri, comp1);
     } else {
-        first_deriv_density = first_derivative(get_density, ri, comp2);
-        second_deriv_density = second_derivative(get_density, ri, comp2);
+        first_deriv_density = first_derivative_den( ri, comp2);
+        second_deriv_density = second_derivative_den( ri, comp2);
     }
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wfloat-equal"

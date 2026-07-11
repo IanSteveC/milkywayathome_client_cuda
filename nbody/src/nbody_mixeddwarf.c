@@ -221,12 +221,39 @@ static real gauss_quad(real (*func)(real, const Dwarf*, const Dwarf*, real, mwbo
         {
             for (int gi = 0; gi < 3 * nIter; ++gi)
                 xs[gi] = nx[4*(gi/3) + (gi%3)];
-            if (nbCUDAPhase1Eval(xs, 3 * nIter, comp1, comp2, energy, isDark, fv) == 0)
+            /* GPU and CPU work concurrently on disjoint node ranges;
+             * results are per-node, so the split cannot affect bits.
+             * Flat team (nested OpenMP is off): the master thread runs
+             * the GPU batch while the other threads consume CPU nodes
+             * on a dynamic schedule; master joins the loop when done.
+             * GPU fraction ~59% balances measured throughputs. */
+            const int total = 3 * nIter;
+            const int k = (total * 59) / 100;   /* nodes [0,k) -> GPU */
+            int gpu_ok = 0;
+            #pragma omp parallel
             {
-                offloaded = 1;
-                for (int gi = 0; gi < 3 * nIter; ++gi)
+                #pragma omp master
+                {
+                    gpu_ok = (nbCUDAPhase1Eval(xs, k, comp1, comp2, energy, isDark, fv) == 0);
+                }
+                int gi;
+                #pragma omp for schedule(dynamic, 8)
+                for (gi = k; gi < total; ++gi)
+                    fv[gi] = (*func)(xs[gi], comp1, comp2, energy, isDark);
+            }
+            offloaded = 1;
+            if (gpu_ok)
+            {
+                for (int gi = 0; gi < k; ++gi)
                     if (isnan(fv[gi]))
                         fv[gi] = (*func)(xs[gi], comp1, comp2, energy, isDark);
+            }
+            else
+            {
+                int gi;
+              #pragma omp parallel for schedule(static)
+                for (gi = 0; gi < k; ++gi)
+                    fv[gi] = (*func)(xs[gi], comp1, comp2, energy, isDark);
             }
             free(xs);
         }
