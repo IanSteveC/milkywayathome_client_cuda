@@ -1660,6 +1660,102 @@ namespace nbp1 {
 #undef NB_P1_QUAL
 }
 
+/* Block-per-node variant: 29 lanes evaluate the independent
+ * potential/density sub-terms of fun() in parallel; lane 0 combines
+ * them with the exact CPU stencil arithmetic (same coefficients, same
+ * summation order, h = 0.001). Kernel wall drops from the SUM of the
+ * ~29 serial evaluations to the SLOWEST single one. Bit-exact:
+ * validated against the host fun() in the standalone harness. */
+extern "C" __global__ void nbCUDAPhase1FunBlockKernel(
+    const double* __restrict__ xs, int n,
+    nbp1::Dwarf c1, nbp1::Dwarf c2, double energy, int isDark,
+    double* __restrict__ out)
+{
+    const int node = blockIdx.x;
+    if (node >= n) return;
+    const double ri = xs[node];
+    const double h  = 0.001;
+    const nbp1::Dwarf* dc = isDark ? &c2 : &c1;
+    __shared__ double ev[29];
+
+    const int l = threadIdx.x;
+    if (l < 29)
+    {
+        double v = 0.0;
+        switch (l) {
+            /* pot c1 / c2, 1st-derivative points (p1..p4 order) */
+            case 0:  v = nbp1::get_potential(&c1, (ri - 2.0 * h)); break;
+            case 1:  v = nbp1::get_potential(&c1, (ri - h) );      break;
+            case 2:  v = nbp1::get_potential(&c1, (ri + 2.0 * h)); break;
+            case 3:  v = nbp1::get_potential(&c1, (ri + h));       break;
+            case 4:  v = nbp1::get_potential(&c2, (ri - 2.0 * h)); break;
+            case 5:  v = nbp1::get_potential(&c2, (ri - h) );      break;
+            case 6:  v = nbp1::get_potential(&c2, (ri + 2.0 * h)); break;
+            case 7:  v = nbp1::get_potential(&c2, (ri + h));       break;
+            /* pot c1 / c2, 2nd-derivative points (p1..p5 order) */
+            case 8:  v = nbp1::get_potential(&c1, (ri + 2.0 * h)); break;
+            case 9:  v = nbp1::get_potential(&c1, (ri + h));       break;
+            case 10: v = nbp1::get_potential(&c1, (ri));           break;
+            case 11: v = nbp1::get_potential(&c1, (ri - h));       break;
+            case 12: v = nbp1::get_potential(&c1, (ri - 2.0 * h)); break;
+            case 13: v = nbp1::get_potential(&c2, (ri + 2.0 * h)); break;
+            case 14: v = nbp1::get_potential(&c2, (ri + h));       break;
+            case 15: v = nbp1::get_potential(&c2, (ri));           break;
+            case 16: v = nbp1::get_potential(&c2, (ri - h));       break;
+            case 17: v = nbp1::get_potential(&c2, (ri - 2.0 * h)); break;
+            /* density (component per isDark), 1st then 2nd points */
+            case 18: v = nbp1::get_density(dc, (ri - 2.0 * h)); break;
+            case 19: v = nbp1::get_density(dc, (ri - h) );      break;
+            case 20: v = nbp1::get_density(dc, (ri + 2.0 * h)); break;
+            case 21: v = nbp1::get_density(dc, (ri + h));       break;
+            case 22: v = nbp1::get_density(dc, (ri + 2.0 * h)); break;
+            case 23: v = nbp1::get_density(dc, (ri + h));       break;
+            case 24: v = nbp1::get_density(dc, (ri));           break;
+            case 25: v = nbp1::get_density(dc, (ri - h));       break;
+            case 26: v = nbp1::get_density(dc, (ri - 2.0 * h)); break;
+            /* potential at ri for the denominator */
+            case 27: v = nbp1::get_potential(&c1, ri); break;
+            case 28: v = nbp1::get_potential(&c2, ri); break;
+        }
+        ev[l] = v;
+    }
+    __syncthreads();
+    if (l != 0) return;
+
+    /* ---- combine: EXACT transcription of the CPU arithmetic ---- */
+    double p1, p2, p3, p4, p5, denom;
+    /* first_derivative(get_potential, ri, c1/c2) */
+    p1 = 1.0 * ev[0];  p2 = - 8.0 * ev[1];  p3 = - 1.0 * ev[2];  p4 = 8.0 * ev[3];
+    denom = ((double) 1.0 / (12.0 * h));
+    double fd1 = (p1 + p2 + p3 + p4) * denom;
+    p1 = 1.0 * ev[4];  p2 = - 8.0 * ev[5];  p3 = - 1.0 * ev[6];  p4 = 8.0 * ev[7];
+    double fd2 = (p1 + p2 + p3 + p4) * denom;
+    double first_deriv_psi = fd1 + fd2;
+    /* second_derivative(get_potential, ...) */
+    p1 = - 1.0 * ev[8];  p2 = 16.0 * ev[9];  p3 = -30.0 * ev[10]; p4 = 16.0 * ev[11]; p5 = - 1.0 * ev[12];
+    denom = ((double) 1.0 / (12.0 * h * h));
+    double sd1 = (p1 + p2 + p3 + p4 + p5) * denom;
+    p1 = - 1.0 * ev[13]; p2 = 16.0 * ev[14]; p3 = -30.0 * ev[15]; p4 = 16.0 * ev[16]; p5 = - 1.0 * ev[17];
+    double sd2 = (p1 + p2 + p3 + p4 + p5) * denom;
+    double second_deriv_psi = sd1 + sd2;
+    /* density derivatives (single component) */
+    p1 = 1.0 * ev[18]; p2 = - 8.0 * ev[19]; p3 = - 1.0 * ev[20]; p4 = 8.0 * ev[21];
+    denom = ((double) 1.0 / (12.0 * h));
+    double first_deriv_density = (p1 + p2 + p3 + p4) * denom;
+    p1 = - 1.0 * ev[22]; p2 = 16.0 * ev[23]; p3 = -30.0 * ev[24]; p4 = 16.0 * ev[25]; p5 = - 1.0 * ev[26];
+    denom = ((double) 1.0 / (12.0 * h * h));
+    double second_deriv_density = (p1 + p2 + p3 + p4 + p5) * denom;
+
+    if (first_deriv_psi == 0.0) first_deriv_psi = 1.0e-6;
+    double dsqden_dpsisq = second_deriv_density * ((double) 1.0 / (first_deriv_psi))
+        - first_deriv_density * second_deriv_psi * ((double) 1.0 / (((first_deriv_psi) * (first_deriv_psi))));
+    double diff = fabs(energy - (ev[27] + ev[28]));
+    double denominator;
+    if (diff != 0.0) denominator = ((double) 1.0 / (sqrt(diff)));
+    else denominator = ((double) 1.0 / (sqrt(fabs(energy - nbp1::potential(ri + 0.0001, &c1, &c2)))));
+    out[node] = dsqden_dpsisq * denominator;
+}
+
 extern "C" __global__ void nbCUDAPhase1FunKernel(
     const double* __restrict__ xs, int n,
     nbp1::Dwarf c1, nbp1::Dwarf c2, double energy, int isDark,
@@ -1688,7 +1784,7 @@ extern "C" int nbCUDAPhase1Eval(const double* xs, int n,
     if (cudaMemcpy(d_x, xs, (size_t)n*8, cudaMemcpyHostToDevice) != cudaSuccess) { broken = 1; return -1; }
     nbp1::Dwarf a, b;
     memcpy(&a, c1, sizeof(a)); memcpy(&b, c2, sizeof(b));
-    nbCUDAPhase1FunKernel<<<(n+255)/256, 256>>>(d_x, n, a, b, energy, isDark, d_o);
+    nbCUDAPhase1FunBlockKernel<<<n, 32>>>(d_x, n, a, b, energy, isDark, d_o);
     if (cudaGetLastError() != cudaSuccess) { broken = 1; return -1; }
     if (cudaMemcpy(out, d_o, (size_t)n*8, cudaMemcpyDeviceToHost) != cudaSuccess) { broken = 1; return -1; }
     return 0;

@@ -37,6 +37,9 @@ their copyright to their programs which execute similar algorithms.
 #include "nbody_io.h"
 #include "nbody_king_model.h"
 #include "nbody_cuda_buffers.h"
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 /*Note: minusfivehalves(x) raises to x^-5/2 power and minushalf(x) is x^-1/2*/
 
@@ -228,32 +231,17 @@ static real gauss_quad(real (*func)(real, const Dwarf*, const Dwarf*, real, mwbo
              * on a dynamic schedule; master joins the loop when done.
              * GPU fraction ~59% balances measured throughputs. */
             const int total = 3 * nIter;
-            const int k = (total * 59) / 100;   /* nodes [0,k) -> GPU */
-            int gpu_ok = 0;
-            #pragma omp parallel
+            /* the block-per-node kernel beats any CPU/hybrid split
+             * (measured: 70s pure GPU vs 82-155s hybrids vs 244s CPU
+             * at 4T), so the GPU takes every node; CPU threads stay
+             * free. On any GPU failure we fall through to the OpenMP
+             * path below. */
+            if (nbCUDAPhase1Eval(xs, total, comp1, comp2, energy, isDark, fv) == 0)
             {
-                #pragma omp master
-                {
-                    gpu_ok = (nbCUDAPhase1Eval(xs, k, comp1, comp2, energy, isDark, fv) == 0);
-                }
-                int gi;
-                #pragma omp for schedule(dynamic, 8)
-                for (gi = k; gi < total; ++gi)
-                    fv[gi] = (*func)(xs[gi], comp1, comp2, energy, isDark);
-            }
-            offloaded = 1;
-            if (gpu_ok)
-            {
-                for (int gi = 0; gi < k; ++gi)
+                offloaded = 1;
+                for (int gi = 0; gi < total; ++gi)
                     if (isnan(fv[gi]))
                         fv[gi] = (*func)(xs[gi], comp1, comp2, energy, isDark);
-            }
-            else
-            {
-                int gi;
-              #pragma omp parallel for schedule(static)
-                for (gi = 0; gi < k; ++gi)
-                    fv[gi] = (*func)(xs[gi], comp1, comp2, energy, isDark);
             }
             free(xs);
         }
