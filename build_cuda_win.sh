@@ -122,22 +122,28 @@ cmake -S "$SOURCE_DIR" -B "$B" \
     -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++"
 
 # ---------- 3. kernels -> multi-arch fatbin -> embedded C array ----------
+# Must go through the SAME pipeline the Linux CMake build uses: compile
+# with -dc (relocatable device code) and device-link with nvlink, one
+# cubin per arch, then fatbinary-combine. A one-shot `nvcc -fatbin`
+# whole-program compile inlines the large integrand helpers into the
+# phase-1 kernel and produces ~2.3x slower SASS (205us vs ~85us per
+# launch; ~70s extra per WU across ~575k phase-1 launches). SASS-only,
+# no trailing PTX - exactly the image set the Linux dist embeds.
 mkdir -p "$B/gen"
-GENCODE=""
+NVCC_DEV_FLAGS="-O3 -DNDEBUG --fmad=false -Xptxas -dlcm=cv --restrict -DNBODY_CUDA=1 -Wno-deprecated-gpu-targets"
+IMAGES=""
 IFS=';' read -ra ARCHS <<< "$SM_ARCHS"
-LAST="${ARCHS[${#ARCHS[@]}-1]}"
 for a in "${ARCHS[@]}"; do
-    GENCODE="$GENCODE -gencode=arch=compute_${a},code=sm_${a}"
+    echo "[fatbin] -dc + nvlink sm_$a"
+    "$CUDA/bin/nvcc" -dc -gencode=arch=compute_${a},code=sm_${a} \
+        $NVCC_DEV_FLAGS \
+        -I "$SOURCE_DIR/nbody/include" -I "$B/include" \
+        -o "$B/gen/dc_${a}.o" \
+        "$SOURCE_DIR/nbody/src/nbody_cuda.cu"
+    "$CUDA/bin/nvlink" --arch=sm_${a} "$B/gen/dc_${a}.o" -o "$B/gen/link_${a}.cubin"
+    IMAGES="$IMAGES --image3=kind=elf,sm=${a},file=$B/gen/link_${a}.cubin"
 done
-GENCODE="$GENCODE -gencode=arch=compute_${LAST},code=compute_${LAST}"
-
-echo "[fatbin] nvcc -fatbin (archs: $SM_ARCHS)"
-"$CUDA/bin/nvcc" -fatbin $GENCODE \
-    --fmad=false -Xptxas -dlcm=cv -O3 \
-    -DNBODY_CUDA=1 \
-    -I "$SOURCE_DIR/nbody/include" -I "$B/include" \
-    -o "$B/gen/nbody_cuda.fatbin" \
-    "$SOURCE_DIR/nbody/src/nbody_cuda.cu"
+"$CUDA/bin/fatbinary" --create="$B/gen/nbody_cuda.fatbin" -64 $IMAGES
 "$CUDA/bin/bin2c" --const --type char --name nb_cuda_fatbin \
     "$B/gen/nbody_cuda.fatbin" > "$B/gen/nbody_cuda_fatbin.h"
 echo "[bin2c] embedded: $(stat -c%s "$B/gen/nbody_cuda.fatbin") bytes"

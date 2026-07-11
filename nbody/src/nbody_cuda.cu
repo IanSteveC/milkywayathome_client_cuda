@@ -1832,19 +1832,33 @@ extern "C" int nbCUDAPhase1Eval(const double* xs, int n, const void* c1, const v
     }
     if (policy != 1 || broken || n <= 0) return -1;
     if (nbCudaLoadModule()) { broken = 1; return -1; }
+    static double* h_in = NULL; static double* h_out = NULL;
     if (n > cap) {
         if (d_x) cuMemFree(d_x);
         if (d_o) cuMemFree(d_o);
+        if (h_in)  cuMemFreeHost(h_in);
+        if (h_out) cuMemFreeHost(h_out);
         cap = n * 2 + 256;
+        /* pinned staging + async copies + one stream sync per call:
+         * the same path the CUDA runtime's cudaMemcpy takes
+         * internally. The raw synchronous cuMemcpyDtoH costs ~214us
+         * per call vs ~95us this way; phase-1 makes ~575k calls, so
+         * the difference is ~70s of wall clock on this WU. */
         if (cuMemAlloc(&d_x, (size_t)cap*8) != CUDA_SUCCESS ||
-            cuMemAlloc(&d_o, (size_t)cap*8) != CUDA_SUCCESS) { broken = 1; return -1; }
+            cuMemAlloc(&d_o, (size_t)cap*8) != CUDA_SUCCESS ||
+            cuMemHostAlloc((void**)&h_in,  (size_t)cap*8, 0) != CUDA_SUCCESS ||
+            cuMemHostAlloc((void**)&h_out, (size_t)cap*8, 0) != CUDA_SUCCESS)
+        { broken = 1; return -1; }
     }
-    if (cuMemcpyHtoD(d_x, xs, (size_t)n*8) != CUDA_SUCCESS) { broken = 1; return -1; }
+    memcpy(h_in, xs, (size_t)n*8);
+    if (cuMemcpyHtoDAsync(d_x, h_in, (size_t)n*8, 0) != CUDA_SUCCESS) { broken = 1; return -1; }
     void* params[] = { &d_x, &n, (void*)c1, (void*)c2, &energy, &isDark, &d_o, NULL };
     if (cuLaunchKernel(nbfn_nbCUDAPhase1FunBlockKernel,
                        (unsigned)n, 1, 1, 32, 1, 1, 0, 0, params, NULL) != CUDA_SUCCESS)
     { broken = 1; return -1; }
-    if (cuMemcpyDtoH(out, d_o, (size_t)n*8) != CUDA_SUCCESS) { broken = 1; return -1; }
+    if (cuMemcpyDtoHAsync(h_out, d_o, (size_t)n*8, 0) != CUDA_SUCCESS) { broken = 1; return -1; }
+    if (cuStreamSynchronize(0) != CUDA_SUCCESS) { broken = 1; return -1; }
+    memcpy(out, h_out, (size_t)n*8);
     return 0;
 }
 #endif
@@ -1992,6 +2006,17 @@ extern "C" __global__ void nbCUDAWinSortScatterKernel(
         }
         __syncthreads();
     }
+}
+
+/* Never called. The WinSort kernels are launched only from the
+ * driver-API host TU (nbody_cuda_win_sort.cpp), which the device-link
+ * pass cannot see; without a host-side reference nvlink would strip
+ * them from the linked cubin and the Windows fatbin would lose them. */
+extern "C" void nbWinSortKernelKeepAlive(void)
+{
+    nbCUDAWinSortHistKernel<<<1, 1>>>(NULL, 0, 0, NULL);
+    nbCUDAWinSortScanKernel<<<1, 1>>>(NULL, 0);
+    nbCUDAWinSortScatterKernel<<<1, 1>>>(NULL, NULL, NULL, NULL, 0, 0, NULL);
 }
 
 #endif /* !NBODY_CUDA_DRIVER_API (win sort kernels) */
