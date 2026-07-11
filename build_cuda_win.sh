@@ -83,6 +83,8 @@ cuInit
 cuLaunchKernel
 cuMemAllocHost_v2
 cuMemAlloc_v2
+cuMemHostAlloc
+cuMemFreeHost
 cuMemFreeHost
 cuMemFree_v2
 cuMemcpyDtoDAsync_v2
