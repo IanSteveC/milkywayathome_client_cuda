@@ -218,7 +218,8 @@ CUresult nbWinRadixSortPairs(void* d_keys_in, void* d_keys_out,
     X(nbCUDACellPackKernel)             \
     X(nbCUDAForceTreeKernel)            \
     X(nbCUDAExternalPotentialKernel)    \
-    X(nbCUDAIntegrationKernel)
+    X(nbCUDAIntegrationKernel)         \
+    X(nbCUDAPhase1FunBlockKernel)
 
 #define NB_DECLARE_FN(k) extern CUfunction nbfn_##k;
 NB_KERNEL_LIST(NB_DECLARE_FN)

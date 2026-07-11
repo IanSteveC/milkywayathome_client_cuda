@@ -1773,6 +1773,29 @@ extern "C" int nbCUDAPhase1Eval(const double* xs, int n,
                                 double energy, int isDark, double* out)
 {
     static double* d_x = NULL; static double* d_o = NULL; static int cap = 0; static int broken = 0;
+    static int policy = -2;   /* -2 undecided, 0 declined, 1 offload */
+    if (policy == -2)
+    {
+        const char* env = getenv("NBODY_PHASE1_GPU");
+        if (env && env[0] == '1')      policy = 1;
+        else if (env && env[0] == '0') policy = 0;
+        else
+        {
+#if defined(__HIP__)
+            /* RDNA (wave32) has 1/16-rate FP64: the CPU OpenMP path is
+             * faster there (measured 273s GPU vs 244s CPU on RX 6800
+             * XT). CDNA/Vega (wave64) has full-rate FP64: offload. */
+            struct cudaDeviceProp p1prop;
+            policy = (cudaGetDeviceProperties(&p1prop, 0) == cudaSuccess
+                      && p1prop.warpSize == 64) ? 1 : 0;
+#else
+            policy = 1;   /* CUDA: block kernel beats CPU (70s vs 244s) */
+#endif
+            if (!policy)
+                fprintf(stderr, "[nbody] phase-1 GPU offload disabled for this device (override: NBODY_PHASE1_GPU=1)\n");
+        }
+    }
+    if (policy != 1) return -1;
     if (broken || n <= 0) return -1;
     if (n > cap) {
         if (d_x) cudaFree(d_x);
@@ -1790,13 +1813,42 @@ extern "C" int nbCUDAPhase1Eval(const double* xs, int n,
     return 0;
 }
 #else
+/* Windows driver-API build: same offload through cuLaunchKernel. The
+ * Dwarf structs are passed as raw parameter bytes (cuLaunchKernel
+ * reads sizes from kernel metadata), so no device-type mirror needed. */
 extern "C" { int nbCUDAPhase1Enable = 0; }
 extern "C" int nbCUDAPhase1Eval(const double* xs, int n, const void* c1, const void* c2,
                                 double energy, int isDark, double* out)
-{ (void)xs;(void)n;(void)c1;(void)c2;(void)energy;(void)isDark;(void)out; return -1; }
+{
+    static CUdeviceptr d_x = 0, d_o = 0; static int cap = 0; static int broken = 0;
+    static int policy = -2;
+    if (policy == -2) {
+        const char* env = getenv("NBODY_PHASE1_GPU");
+        policy = (env && env[0] == '0') ? 0 : 1;   /* CUDA: default on */
+    }
+    if (policy != 1 || broken || n <= 0) return -1;
+    if (nbCudaLoadModule()) { broken = 1; return -1; }
+    if (n > cap) {
+        if (d_x) cuMemFree(d_x);
+        if (d_o) cuMemFree(d_o);
+        cap = n * 2 + 256;
+        if (cuMemAlloc(&d_x, (size_t)cap*8) != CUDA_SUCCESS ||
+            cuMemAlloc(&d_o, (size_t)cap*8) != CUDA_SUCCESS) { broken = 1; return -1; }
+    }
+    if (cuMemcpyHtoD(d_x, xs, (size_t)n*8) != CUDA_SUCCESS) { broken = 1; return -1; }
+    void* params[] = { &d_x, &n, (void*)c1, (void*)c2, &energy, &isDark, &d_o, NULL };
+    if (cuLaunchKernel(nbfn_nbCUDAPhase1FunBlockKernel,
+                       (unsigned)n, 1, 1, 32, 1, 1, 0, 0, params, NULL) != CUDA_SUCCESS)
+    { broken = 1; return -1; }
+    if (cuMemcpyDtoH(out, d_o, (size_t)n*8) != CUDA_SUCCESS) { broken = 1; return -1; }
+    return 0;
+}
 #endif
 
-#if !defined(NBODY_CUDA_DRIVER_API)  /* device code: excluded from MinGW host pass */
+#if !defined(NBODY_CUDA_DRIVER_API) && !defined(__HIP__)
+/* HIP builds exclude these too: they are only launched by the Windows
+ * driver-API host (HIP keeps rocPRIM), and their 32-bit warp-ballot
+ * masks are CUDA-specific. */
 /* ----- Windows driver-API stable radix sort (CUB replacement) -----
  * LSD radix sort over the full 128-bit Morton key, 16 passes of 8 bits,
  * (key, int value) pairs, ASCENDING and STABLE - exactly the contract
