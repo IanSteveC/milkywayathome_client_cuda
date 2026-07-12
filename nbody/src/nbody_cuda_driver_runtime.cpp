@@ -40,6 +40,11 @@ int nbEnsureCudaCtx(void) {
     if (g_ctx_ok == 0) return 0;
     if (g_ctx_ok == 1) return -1;
 
+#if defined(NBODY_HIP_DYNLOAD)
+    /* resolve amdhip64 (LoadLibrary/dlopen) before the first HIP call */
+    if (nbHipLoadRuntime()) { g_ctx_ok = 1; return -1; }
+#endif
+
     CUresult e = cuInit(0);
     if (e != CUDA_SUCCESS) {
         fprintf(stderr, "[nbody_cuda_win] cuInit failed: %d\n", (int)e);

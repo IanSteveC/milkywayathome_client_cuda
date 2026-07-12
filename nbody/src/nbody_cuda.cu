@@ -1863,10 +1863,25 @@ extern "C" int nbCUDAPhase1Eval(const double* xs, int n, const void* c1, const v
 }
 #endif
 
-#if !defined(NBODY_CUDA_DRIVER_API) && !defined(__HIP__)
-/* HIP builds exclude these too: they are only launched by the Windows
- * driver-API host (HIP keeps rocPRIM), and their 32-bit warp-ballot
- * masks are CUDA-specific. */
+#if (!defined(NBODY_CUDA_DRIVER_API) && !defined(__HIP__)) || defined(NBODY_HIP_GENCO)
+/* Compiled for: every nvcc build (dead code on Linux, launched by the
+ * CUDA Windows driver-API host) and the HIP genco device compile for
+ * the Windows HIP app (-DNBODY_HIP_GENCO), whose MinGW host also can't
+ * orchestrate rocPRIM. The normal Linux HIP build keeps rocPRIM and
+ * excludes these. The warp logic is wavefront-agnostic (64-bit ballot +
+ * warpSize), so the stable permutation is identical on wave32 and
+ * wave64 and matches both CUB and rocPRIM bit for bit. */
+
+/* Ballot/popcount abstraction: HIP __ballot is 64-bit and mask-free;
+ * CUDA __ballot_sync is 32-bit and takes an active mask. Both widen to
+ * a 64-bit lane mask; only the low warpSize bits are ever populated. */
+#if defined(__HIP__)
+#  define NB_BALLOT(pred) ((unsigned long long)__ballot((int)(pred)))
+#else
+#  define NB_BALLOT(pred) ((unsigned long long)__ballot_sync(0xFFFFFFFFu, (int)(pred)))
+#endif
+#define NB_POPCLL(x) ((unsigned int)__popcll((unsigned long long)(x)))
+
 /* ----- Windows driver-API stable radix sort (CUB replacement) -----
  * LSD radix sort over the full 128-bit Morton key, 16 passes of 8 bits,
  * (key, int value) pairs, ASCENDING and STABLE - exactly the contract
@@ -1956,8 +1971,8 @@ extern "C" __global__ void nbCUDAWinSortScatterKernel(
 
     const int cbase = blockIdx.x * NB_WSORT_CHUNK;
     const int shift = (pass & 7) * 8;
-    const int warp  = threadIdx.x >> 5;
-    const int lane  = threadIdx.x & 31;
+    const int warp  = threadIdx.x / warpSize;
+    const int lane  = threadIdx.x % warpSize;
 
     for (int r = 0; r < 4; ++r)
     {
@@ -1972,20 +1987,21 @@ extern "C" __global__ void nbCUDAWinSortScatterKernel(
             digit = (unsigned)(w >> shift) & 0xFFu;
         }
 
-        /* warp-local stable rank among same-digit lanes (ballot per bit) */
-        unsigned int peers = __ballot_sync(0xFFFFFFFFu, alive);
+        /* warp-local stable rank among same-digit lanes (ballot per bit).
+         * 64-bit masks so wave64 works; only low warpSize bits are set. */
+        unsigned long long peers = NB_BALLOT(alive);
         for (int b = 0; b < 8; ++b)
         {
-            unsigned int bit  = (digit >> b) & 1u;
-            unsigned int mask = __ballot_sync(0xFFFFFFFFu, bit && alive);
+            unsigned int bit = (digit >> b) & 1u;
+            unsigned long long mask = NB_BALLOT(bit && alive);
             peers &= bit ? mask : ~mask;
         }
-        const unsigned int lower = peers & ((1u << lane) - 1u);
-        const unsigned int wrank = __popc(lower);
-        const unsigned int wcnt  = __popc(peers);
+        const unsigned long long lower = peers & (((unsigned long long)1 << lane) - 1ull);
+        const unsigned int wrank = NB_POPCLL(lower);
+        const unsigned int wcnt  = NB_POPCLL(peers);
 
         /* per-warp digit counts for cross-warp (warp-order) offsets */
-        for (int d = lane; d < 256; d += 32) warpHist[warp][d] = 0u;
+        for (int d = lane; d < 256; d += warpSize) warpHist[warp][d] = 0u;
         __syncthreads();
         if (alive && wrank == 0) warpHist[warp][digit] = wcnt;
         __syncthreads();
