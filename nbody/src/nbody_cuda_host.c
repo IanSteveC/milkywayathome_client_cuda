@@ -289,7 +289,7 @@ static int nbCUDACanHandlePotential(const NBodyCtx* ctx)
     /* Lua-driven custom potentials are not supported on GPU. */
     if (ctx->potentialType == EXTERNAL_POTENTIAL_CUSTOM_LUA)
     {
-        mw_printf("[nbody_cuda] reject: custom Lua potential not supported on GPU\n");
+        mw_printf(NBODY_GPU_TAG " reject: custom Lua potential not supported on GPU\n");
         return 0;
     }
     /* No external potential — fine. */
@@ -302,7 +302,7 @@ static int nbCUDACanHandlePotential(const NBodyCtx* ctx)
      && ctx->pot.sphere[0].type != HernquistSpherical
      && ctx->pot.sphere[0].type != PlummerSpherical)
     {
-        mw_printf("[nbody_cuda] reject: bulge type %s not supported on GPU\n",
+        mw_printf(NBODY_GPU_TAG " reject: bulge type %s not supported on GPU\n",
                   nbCUDASphericalName(ctx->pot.sphere[0].type));
         return 0;
     }
@@ -310,7 +310,7 @@ static int nbCUDACanHandlePotential(const NBodyCtx* ctx)
     if (ctx->pot.disk.type != NoDisk
      && ctx->pot.disk.type != MiyamotoNagaiDisk)
     {
-        mw_printf("[nbody_cuda] reject: primary disk type %s not supported on GPU\n",
+        mw_printf(NBODY_GPU_TAG " reject: primary disk type %s not supported on GPU\n",
                   nbCUDADiskName(ctx->pot.disk.type));
         return 0;
     }
@@ -318,7 +318,7 @@ static int nbCUDACanHandlePotential(const NBodyCtx* ctx)
     if (ctx->pot.disk2.type != NoDisk
      && ctx->pot.disk2.type != MiyamotoNagaiDisk)
     {
-        mw_printf("[nbody_cuda] reject: secondary disk type %s not supported on GPU\n",
+        mw_printf(NBODY_GPU_TAG " reject: secondary disk type %s not supported on GPU\n",
                   nbCUDADiskName(ctx->pot.disk2.type));
         return 0;
     }
@@ -329,7 +329,7 @@ static int nbCUDACanHandlePotential(const NBodyCtx* ctx)
      && ctx->pot.halo.type != NFWMassHalo
      && ctx->pot.halo.type != SphericalNFWerkalHalo)
     {
-        mw_printf("[nbody_cuda] reject: halo type %s not supported on GPU\n",
+        mw_printf(NBODY_GPU_TAG " reject: halo type %s not supported on GPU\n",
                   nbCUDAHaloName(ctx->pot.halo.type));
         return 0;
     }
@@ -344,13 +344,13 @@ NBodyStatus_int nbInitCUDA(const NBodyCtx* ctx, NBodyState* st)
 
     if (!st->bodytab || st->nbody <= 0)
     {
-        mw_printf("[nbody_cuda] bodies not yet loaded — call nbInitCUDA after Lua setup\n");
+        mw_printf(NBODY_GPU_TAG " bodies not yet loaded — call nbInitCUDA after Lua setup\n");
         return NBODY_ERROR;
     }
 
     if (!nbCUDACanHandlePotential(ctx))
     {
-        mw_printf("[nbody_cuda] potential model not supported by CUDA backend — falling back to CPU\n");
+        mw_printf(NBODY_GPU_TAG " potential model not supported by CUDA backend — falling back to CPU\n");
         return NBODY_ERROR;
     }
 
@@ -359,14 +359,14 @@ NBodyStatus_int nbInitCUDA(const NBodyCtx* ctx, NBodyState* st)
     #endif
     if (ctx->criterion == Exact && !NBODY_CUDA_FORCE_EXACT)
     {
-        mw_printf("[nbody_cuda] EXACT criterion not yet wired into CUDA path — use TreeCode\n");
+        mw_printf(NBODY_GPU_TAG " EXACT criterion not yet wired into CUDA path — use TreeCode\n");
         return NBODY_ERROR;
     }
 
     int numSMs = 0;
     if (nbCUDAGetDeviceSMCount(&numSMs) != 0)
     {
-        mw_printf("[nbody_cuda] no CUDA device available\n");
+        mw_printf(NBODY_GPU_TAG " no CUDA device available\n");
         return NBODY_ERROR;
     }
 
@@ -385,7 +385,7 @@ NBodyStatus_int nbInitCUDA(const NBodyCtx* ctx, NBodyState* st)
         setLMCShiftArray(st, shiftLMC, sizeLMC);
         getLMCPosVel(&LMCx, &LMCv);
         setLMCPosVel(st, LMCx, LMCv);
-        mw_printf("[nbody_cuda] LMC init: pos=(%.4g,%.4g,%.4g) vel=(%.4g,%.4g,%.4g) nShift=%zu\n",
+        mw_printf(NBODY_GPU_TAG " LMC init: pos=(%.4g,%.4g,%.4g) vel=(%.4g,%.4g,%.4g) nShift=%zu\n",
                   X(st->LMCpos), Y(st->LMCpos), Z(st->LMCpos),
                   X(st->LMCvel), Y(st->LMCvel), Z(st->LMCvel),
                   sizeLMC);
@@ -407,7 +407,7 @@ NBodyStatus_int nbInitCUDA(const NBodyCtx* ctx, NBodyState* st)
 
     if (nbCUDAMarshalBodiesToDevice(st, nNode) != NBODY_SUCCESS)
     {
-        mw_printf("[nbody_cuda] failed to upload bodies\n");
+        mw_printf(NBODY_GPU_TAG " failed to upload bodies\n");
         return NBODY_ERROR;
     }
 
@@ -415,7 +415,7 @@ NBodyStatus_int nbInitCUDA(const NBodyCtx* ctx, NBodyState* st)
     {
         if (nbCUDATreeBuffersAlloc(st->cudaBuffers, nNode, numSMs, useQuad) != 0)
         {
-            mw_printf("[nbody_cuda] tree buffer alloc failed\n");
+            mw_printf(NBODY_GPU_TAG " tree buffer alloc failed\n");
             nbCUDAReleaseBodyBuffers(st);
             return NBODY_ERROR;
         }
@@ -463,12 +463,12 @@ NBodyStatus_int nbInitCUDA(const NBodyCtx* ctx, NBodyState* st)
     #endif
     if (initForceFailed)
     {
-        mw_printf("[nbody_cuda] initial force pass failed\n");
+        mw_printf(NBODY_GPU_TAG " initial force pass failed\n");
         nbReleaseCUDA(st);
         return NBODY_ERROR;
     }
 
-    mw_printf("[nbody_cuda] initialized: nbody=%d nNode=%d numSMs=%d useQuad=%d\n",
+    mw_printf(NBODY_GPU_TAG " initialized: nbody=%d nNode=%d numSMs=%d useQuad=%d\n",
               st->nbody, nNode, numSMs, useQuad);
 
     /* DEBUG: dump per-body initial acc to a binary file when
@@ -931,7 +931,7 @@ NBodyStatus_int nbRunSystemCUDA(const NBodyCtx* ctx, NBodyState* st, const void*
     {
         int maxDepth  = nbCUDABuffersGetMaxDepth(st->cudaBuffers);
         int errorCode = nbCUDABuffersGetErrorCode(st->cudaBuffers);
-        fprintf(stderr, "[nbody_cuda] cumulative maxDepth=%d errorCode=%d%s\n",
+        fprintf(stderr, NBODY_GPU_TAG " cumulative maxDepth=%d errorCode=%d%s\n",
                 maxDepth, errorCode,
                 errorCode == 1 ? " (MAXDEPTH overflow: bodies dropped!)" : "");
     }

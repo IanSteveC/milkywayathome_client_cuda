@@ -139,7 +139,7 @@
 #define CUDA_CHECK(call) do {                                         \
     cudaError_t _err = (call);                                        \
     if (_err != cudaSuccess) {                                        \
-        fprintf(stderr, "[nbody_cuda] %s:%d: %s -> %s\n",             \
+        fprintf(stderr, NBODY_GPU_TAG " %s:%d: %s -> %s\n",             \
                 __FILE__, __LINE__, #call, cudaGetErrorString(_err)); \
         return NBODY_CUDA_ERROR;                                      \
     }                                                                 \
@@ -432,30 +432,30 @@ extern "C" int nbCUDAGetDeviceSMCount(int* outSMs)
     cudaError_t err = cudaGetDeviceCount(&count);
     if (err != cudaSuccess)
     {
-        fprintf(stderr, "[nbody_cuda] cudaGetDeviceCount: %s (%d)\n",
+        fprintf(stderr, NBODY_GPU_TAG " cudaGetDeviceCount: %s (%d)\n",
                 cudaGetErrorString(err), (int) err);
         return -1;
     }
     if (count <= 0)
     {
-        fprintf(stderr, "[nbody_cuda] no CUDA devices reported (count=%d)\n", count);
+        fprintf(stderr, NBODY_GPU_TAG " no CUDA devices reported (count=%d)\n", count);
         return -1;
     }
     int dev = 0;
     err = cudaGetDevice(&dev);
     if (err != cudaSuccess)
     {
-        fprintf(stderr, "[nbody_cuda] cudaGetDevice: %s\n", cudaGetErrorString(err));
+        fprintf(stderr, NBODY_GPU_TAG " cudaGetDevice: %s\n", cudaGetErrorString(err));
         return -1;
     }
     cudaDeviceProp prop;
     err = cudaGetDeviceProperties(&prop, dev);
     if (err != cudaSuccess)
     {
-        fprintf(stderr, "[nbody_cuda] cudaGetDeviceProperties: %s\n", cudaGetErrorString(err));
+        fprintf(stderr, NBODY_GPU_TAG " cudaGetDeviceProperties: %s\n", cudaGetErrorString(err));
         return -1;
     }
-    fprintf(stderr, "[nbody_cuda] device %d: %s, SMs=%d, compute=%d.%d\n",
+    fprintf(stderr, NBODY_GPU_TAG " device %d: %s, SMs=%d, compute=%d.%d\n",
             dev, prop.name, prop.multiProcessorCount, prop.major, prop.minor);
 #if defined(__HIP__)
     /* Masks/indexing are parameterized on the per-arch wavefront
@@ -700,7 +700,7 @@ extern "C" NBodyStatus_int nbCUDABuffersAlloc(struct NBodyCUDABuffers** outBuffe
     }
     if (err != cudaSuccess)
     {
-        fprintf(stderr, "[nbody_cuda] cudaMalloc failed at buffer %d/%d: %s\n",
+        fprintf(stderr, NBODY_GPU_TAG " cudaMalloc failed at buffer %d/%d: %s\n",
                 allocated, 10, cudaGetErrorString(err));
         for (int i = 0; i < allocated; ++i)
         {
@@ -719,7 +719,7 @@ extern "C" NBodyStatus_int nbCUDABuffersAlloc(struct NBodyCUDABuffers** outBuffe
     err = cudaMalloc((void**) &b->d_types, typeBytes);
     if (err != cudaSuccess)
     {
-        fprintf(stderr, "[nbody_cuda] cudaMalloc failed for d_types: %s\n",
+        fprintf(stderr, NBODY_GPU_TAG " cudaMalloc failed for d_types: %s\n",
                 cudaGetErrorString(err));
         for (int i = 0; i < 10; ++i) { cudaFree(*specs[i].ptr); *specs[i].ptr = NULL; }
         free(b);
@@ -738,13 +738,13 @@ static int nbCUDAMallocRecorded(void** ptr, size_t bytes,
     cudaError_t err = cudaMalloc(ptr, bytes);
     if (err != cudaSuccess)
     {
-        fprintf(stderr, "[nbody_cuda] cudaMalloc(%zu) failed: %s\n",
+        fprintf(stderr, NBODY_GPU_TAG " cudaMalloc(%zu) failed: %s\n",
                 bytes, cudaGetErrorString(err));
         return -1;
     }
     if (*nAlloc >= maxAlloc)
     {
-        fprintf(stderr, "[nbody_cuda] alloc-tracking overflow\n");
+        fprintf(stderr, NBODY_GPU_TAG " alloc-tracking overflow\n");
         cudaFree(*ptr);
         *ptr = NULL;
         return -1;
@@ -863,7 +863,7 @@ extern "C" NBodyStatus_int nbCUDATreeBuffersAlloc(struct NBodyCUDABuffers* buffe
             0, 128);
         if (cubQueryErr != cudaSuccess || buffers->sortTempBytes == 0)
         {
-            fprintf(stderr, "[nbody_cuda] cub::DeviceRadixSort::SortPairs query failed (%s, %zu bytes)\n",
+            fprintf(stderr, NBODY_GPU_TAG " cub::DeviceRadixSort::SortPairs query failed (%s, %zu bytes)\n",
                     cudaGetErrorString(cubQueryErr), buffers->sortTempBytes);
             goto fail;
         }
@@ -1329,7 +1329,7 @@ extern "C" NBodyStatus_int nbCUDALaunchForceExact(struct NBodyCUDABuffers* buffe
     cudaError_t launchErr = cudaGetLastError();
     if (launchErr != cudaSuccess)
     {
-        fprintf(stderr, "[nbody_cuda] forceExact kernel launch failed: %s\n",
+        fprintf(stderr, NBODY_GPU_TAG " forceExact kernel launch failed: %s\n",
                 cudaGetErrorString(launchErr));
         return NBODY_CUDA_ERROR;
     }
@@ -1531,7 +1531,7 @@ extern "C" NBodyStatus_int nbCUDALaunchBoundingBox(struct NBodyCUDABuffers* buff
                                              nNode);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
-        fprintf(stderr, "[nbody_cuda] boundingBox launch: %s\n", cudaGetErrorString(e));
+        fprintf(stderr, NBODY_GPU_TAG " boundingBox launch: %s\n", cudaGetErrorString(e));
         return NBODY_CUDA_ERROR;
     }
     return NBODY_CUDA_SUCCESS;
@@ -1577,7 +1577,7 @@ extern "C" NBodyStatus_int nbCUDALaunchBuildTreeClear(struct NBodyCUDABuffers* b
                                                 buffers->nbody, nNode);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
-        fprintf(stderr, "[nbody_cuda] buildTreeClear launch: %s\n", cudaGetErrorString(e));
+        fprintf(stderr, NBODY_GPU_TAG " buildTreeClear launch: %s\n", cudaGetErrorString(e));
         return NBODY_CUDA_ERROR;
     }
     return NBODY_CUDA_SUCCESS;
@@ -2530,33 +2530,33 @@ extern "C" NBodyStatus_int nbCUDABuildTreeMorton(struct NBodyCUDABuffers* buffer
     {
         if ((err = cudaStreamBeginCapture(buffers->mortonStream,
                                           cudaStreamCaptureModeThreadLocal)) != cudaSuccess) {
-            fprintf(stderr, "[nbody_cuda] morton graph beginCapture: %s\n", cudaGetErrorString(err));
+            fprintf(stderr, NBODY_GPU_TAG " morton graph beginCapture: %s\n", cudaGetErrorString(err));
             return NBODY_CUDA_ERROR;
         }
         if ((err = nbCUDAMortonRecord(buffers, nbody, nNode, buffers->mortonStream)) != cudaSuccess) {
             cudaStreamEndCapture(buffers->mortonStream, &buffers->mortonGraph);
-            fprintf(stderr, "[nbody_cuda] morton record (capture): %s\n", cudaGetErrorString(err));
+            fprintf(stderr, NBODY_GPU_TAG " morton record (capture): %s\n", cudaGetErrorString(err));
             return NBODY_CUDA_ERROR;
         }
         if ((err = cudaStreamEndCapture(buffers->mortonStream, &buffers->mortonGraph)) != cudaSuccess) {
-            fprintf(stderr, "[nbody_cuda] morton graph endCapture: %s\n", cudaGetErrorString(err));
+            fprintf(stderr, NBODY_GPU_TAG " morton graph endCapture: %s\n", cudaGetErrorString(err));
             return NBODY_CUDA_ERROR;
         }
         if ((err = cudaGraphInstantiate(&buffers->mortonGraphExec,
                                          buffers->mortonGraph,
                                          nullptr, nullptr, 0)) != cudaSuccess) {
-            fprintf(stderr, "[nbody_cuda] morton graph instantiate: %s\n", cudaGetErrorString(err));
+            fprintf(stderr, NBODY_GPU_TAG " morton graph instantiate: %s\n", cudaGetErrorString(err));
             return NBODY_CUDA_ERROR;
         }
         buffers->mortonGraphCaptured = 1;
     }
 
     if ((err = cudaGraphLaunch(buffers->mortonGraphExec, buffers->mortonStream)) != cudaSuccess) {
-        fprintf(stderr, "[nbody_cuda] morton graph launch: %s\n", cudaGetErrorString(err));
+        fprintf(stderr, NBODY_GPU_TAG " morton graph launch: %s\n", cudaGetErrorString(err));
         return NBODY_CUDA_ERROR;
     }
     if ((err = cudaStreamSynchronize(buffers->mortonStream)) != cudaSuccess) {
-        fprintf(stderr, "[nbody_cuda] morton stream sync: %s\n", cudaGetErrorString(err));
+        fprintf(stderr, NBODY_GPU_TAG " morton stream sync: %s\n", cudaGetErrorString(err));
         return NBODY_CUDA_ERROR;
     }
     if (doProfile) { syncNow(); clock_gettime(CLOCK_MONOTONIC, &t3); }
@@ -2641,7 +2641,7 @@ extern "C" NBodyStatus_int nbCUDALaunchSummarizationClear(struct NBodyCUDABuffer
                                                     nNode);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
-        fprintf(stderr, "[nbody_cuda] summarizationClear launch: %s\n", cudaGetErrorString(e));
+        fprintf(stderr, NBODY_GPU_TAG " summarizationClear launch: %s\n", cudaGetErrorString(e));
         return NBODY_CUDA_ERROR;
     }
     return NBODY_CUDA_SUCCESS;
@@ -2800,7 +2800,7 @@ extern "C" NBodyStatus_int nbCUDALaunchSort(struct NBodyCUDABuffers* buffers,
     NB_LAUNCH(nbCUDASortIdentityKernel, grid, block, buffers->d_sort, nbody);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
-        fprintf(stderr, "[nbody_cuda] sortIdentity launch: %s\n", cudaGetErrorString(e));
+        fprintf(stderr, NBODY_GPU_TAG " sortIdentity launch: %s\n", cudaGetErrorString(e));
         return NBODY_CUDA_ERROR;
     }
     return NBODY_CUDA_SUCCESS;
@@ -3125,7 +3125,7 @@ extern "C" NBodyStatus_int nbCUDALaunchBuildTree(struct NBodyCUDABuffers* buffer
                                            nNode);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
-        fprintf(stderr, "[nbody_cuda] buildTree launch: %s\n", cudaGetErrorString(e));
+        fprintf(stderr, NBODY_GPU_TAG " buildTree launch: %s\n", cudaGetErrorString(e));
         return NBODY_CUDA_ERROR;
     }
     return NBODY_CUDA_SUCCESS;
@@ -3395,7 +3395,7 @@ extern "C" NBodyStatus_int nbCUDALaunchSummarization(struct NBodyCUDABuffers* bu
                                                theta);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
-        fprintf(stderr, "[nbody_cuda] summarization launch: %s\n", cudaGetErrorString(e));
+        fprintf(stderr, NBODY_GPU_TAG " summarization launch: %s\n", cudaGetErrorString(e));
         return NBODY_CUDA_ERROR;
     }
     return NBODY_CUDA_SUCCESS;
@@ -3677,7 +3677,7 @@ extern "C" NBodyStatus_int nbCUDALaunchQuadMoments(struct NBodyCUDABuffers* buff
                                              nNode);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
-        fprintf(stderr, "[nbody_cuda] quadMoments launch: %s\n", cudaGetErrorString(e));
+        fprintf(stderr, NBODY_GPU_TAG " quadMoments launch: %s\n", cudaGetErrorString(e));
         return NBODY_CUDA_ERROR;
     }
     return NBODY_CUDA_SUCCESS;
@@ -3787,7 +3787,7 @@ extern "C" NBodyStatus_int nbCUDALaunchCellPack(struct NBodyCUDABuffers* buffers
                                            buffers->nbody);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
-        fprintf(stderr, "[nbody_cuda] cellPack launch: %s\n", cudaGetErrorString(e));
+        fprintf(stderr, NBODY_GPU_TAG " cellPack launch: %s\n", cudaGetErrorString(e));
         return NBODY_CUDA_ERROR;
     }
     return NBODY_CUDA_SUCCESS;
@@ -4304,7 +4304,7 @@ extern "C" NBodyStatus_int nbCUDALaunchForceTree(struct NBodyCUDABuffers* buffer
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess)
     {
-        fprintf(stderr, "[nbody_cuda] forceTree launch: %s\n", cudaGetErrorString(e));
+        fprintf(stderr, NBODY_GPU_TAG " forceTree launch: %s\n", cudaGetErrorString(e));
         return NBODY_CUDA_ERROR;
     }
     return NBODY_CUDA_SUCCESS;
@@ -4687,7 +4687,7 @@ extern "C" NBodyStatus_int nbCUDALaunchExternalPotential(
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess)
     {
-        fprintf(stderr, "[nbody_cuda] externalPotential launch: %s\n", cudaGetErrorString(e));
+        fprintf(stderr, NBODY_GPU_TAG " externalPotential launch: %s\n", cudaGetErrorString(e));
         return NBODY_CUDA_ERROR;
     }
     return NBODY_CUDA_SUCCESS;
@@ -4823,7 +4823,7 @@ extern "C" NBodyStatus_int nbCUDALaunchIntegration(struct NBodyCUDABuffers* buff
     cudaError_t launchErr = cudaGetLastError();
     if (launchErr != cudaSuccess)
     {
-        fprintf(stderr, "[nbody_cuda] integration kernel launch failed: %s\n",
+        fprintf(stderr, NBODY_GPU_TAG " integration kernel launch failed: %s\n",
                 cudaGetErrorString(launchErr));
         return NBODY_CUDA_ERROR;
     }
