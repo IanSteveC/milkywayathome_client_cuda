@@ -378,10 +378,27 @@ endif()
 option(NBODY_CUDA "Build nbody with CUDA" OFF)
 option(NBODY_CUDA_WIN "Cross-build the CUDA app for Windows via the driver API (MinGW host, embedded fatbin kernels)" OFF)
 
+# HIP module-API host build (Windows cross-build or a native Linux
+# validation harness). Reuses the entire driver-API host path but swaps
+# the backend from the CUDA driver API to the HIP module API via
+# nbody_hip_shim.h. Device kernels come from a hipcc --genco code object
+# (see build_hip_win.sh); the host links amdhip64 (Windows) or
+# libamdhip64.so (Linux) passed through NBODY_CUDA_WIN_NVCUDA.
+option(NBODY_HIP_WIN "Build the HIP app over the module API (driver-API host path, embedded code object)" OFF)
+if(NBODY_HIP_WIN)
+  set(NBODY_CUDA_WIN ON)
+  add_definitions("-DNBODY_HIP_DRIVER_API")
+  # Resolve amdhip64 at runtime (LoadLibrary/dlopen) rather than
+  # hard-linking a specific versioned name; also lets the exe run
+  # CPU-only when no HIP runtime is installed.
+  add_definitions("-DNBODY_HIP_DYNLOAD")
+endif()
+
 if(NBODY_CUDA_WIN)
-  # Host side is plain C++ over the CUDA *driver* API; kernels come from
-  # a fatbin built separately by nvcc (see build_cuda_win.sh). No CUDA
-  # language support or toolkit libraries are needed in this configure.
+  # Host side is plain C++ over the CUDA *driver* API (or the HIP module
+  # API when NBODY_HIP_WIN is set); kernels come from a code image built
+  # separately (see build_cuda_win.sh / build_hip_win.sh). No CUDA/HIP
+  # language support is needed in this configure.
   set(NBODY_CUDA ON)
   add_definitions("-DNBODY_CUDA_DRIVER_API")
 endif()

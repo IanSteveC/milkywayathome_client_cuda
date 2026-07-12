@@ -20,7 +20,11 @@
 
 #ifdef NBODY_CUDA_DRIVER_API
 
-#include <cuda.h>   /* driver API only */
+#if defined(NBODY_HIP_DRIVER_API)
+#include "nbody_hip_shim.h"   /* HIP module/driver API, hand-declared */
+#else
+#include <cuda.h>             /* CUDA driver API only */
+#endif
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>

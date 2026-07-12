@@ -49,9 +49,11 @@
 
 #cmakedefine01 ENABLE_CURSES
 
-#if NBODY_HIP && defined(_OPENMP)
+/* The Windows HIP build reuses the CUDA driver-API host path, so it has
+ * NBODY_CUDA=1 but NBODY_HIP=0; NBODY_HIP_DRIVER_API marks it as HIP. */
+#if (NBODY_HIP || defined(NBODY_HIP_DRIVER_API)) && defined(_OPENMP)
   #define NBODY_EXTRAVER "HIP and OpenMP"
-#elif NBODY_HIP
+#elif (NBODY_HIP || defined(NBODY_HIP_DRIVER_API))
   #define NBODY_EXTRAVER "HIP"
 #elif NBODY_CUDA && defined(_OPENMP)
   #define NBODY_EXTRAVER "CUDA and OpenMP"
@@ -71,6 +73,15 @@
   #define NBODY_EXTRALIB "Crlibm"
 #else
   #define NBODY_EXTRALIB ""
+#endif
+
+/* Log prefix for shared GPU code (nbody_cuda.cu / nbody_cuda_host.c):
+ * HIP builds -- native or the Windows module-API build -- tag lines
+ * [nbody_hip]; CUDA builds tag [nbody_cuda]. */
+#if NBODY_HIP || defined(NBODY_HIP_DRIVER_API)
+  #define NBODY_GPU_TAG "[nbody_hip]"
+#else
+  #define NBODY_GPU_TAG "[nbody_cuda]"
 #endif
 
 

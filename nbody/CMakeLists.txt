@@ -211,6 +211,9 @@ if(NBODY_CUDA OR NBODY_HIP)
   if(NBODY_CUDA_WIN)
     list(APPEND nbody_lib_src ${NBODY_SRC_DIR}/nbody_cuda_driver_runtime.cpp
                               ${NBODY_SRC_DIR}/nbody_cuda_win_sort.cpp)
+    if(NBODY_HIP_WIN)
+      list(APPEND nbody_lib_src ${NBODY_SRC_DIR}/nbody_hip_loader.cpp)
+    endif()
   endif()
   list(APPEND nbody_lib_headers ${NBODY_INCLUDE_DIR}/nbody_cuda.h
                                 ${NBODY_INCLUDE_DIR}/nbody_cuda_buffers.h
