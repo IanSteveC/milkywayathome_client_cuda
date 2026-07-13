@@ -30,6 +30,10 @@
 #  define NB_WIN_TAG "[nbody_cuda_win]"
 #endif
 
+/* Defined in nbody_cuda_host.c (compiled into this driver-API host too).
+ * Returns the GPU ordinal BOINC assigned / --device requested. */
+extern "C" int nbCUDAGetTargetDevice(void);
+
 CUresult nb_last_launch_err = CUDA_SUCCESS;
 
 #define NB_DEFINE_FN(k) CUfunction nbfn_##k = NULL;
@@ -58,9 +62,12 @@ int nbEnsureCudaCtx(void) {
         g_ctx_ok = 1;
         return -1;
     }
-    e = cuDeviceGet(&g_dev, 0);
+    /* Honor the GPU BOINC assigned (gpu_device_num) / --device override
+     * instead of always binding ordinal 0. */
+    const int wantDev = nbCUDAGetTargetDevice();
+    e = cuDeviceGet(&g_dev, wantDev);
     if (e != CUDA_SUCCESS) {
-        fprintf(stderr, NB_WIN_TAG " cuDeviceGet(0) failed: %d\n", (int)e);
+        fprintf(stderr, NB_WIN_TAG " could not select GPU device %d (err %d) — check --device / BOINC GPU assignment\n", wantDev, (int)e);
         g_ctx_ok = 1;
         return -1;
     }

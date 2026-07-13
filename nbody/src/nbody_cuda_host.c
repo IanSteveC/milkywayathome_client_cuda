@@ -37,6 +37,15 @@
 /* Allocate a contiguous block of 7*nbody doubles to hold the SoA pack
  * (pos x/y/z, vel x/y/z, mass) used during a single round-trip. One
  * allocation keeps the cost down and the allocations aligned. */
+/* Target GPU ordinal, chosen at startup from BOINC's gpu_device_num or
+ * an explicit --device (see nbody.c). Read by the native cudaSetDevice
+ * path (nbCUDAGetDeviceSMCount) and the Windows driver cuDeviceGet path
+ * (nbEnsureCudaCtx). Defined here because this TU is compiled into every
+ * GPU build (native CUDA, native HIP, and the driver-API host). */
+static int s_nbCUDATargetDevice = 0;
+void nbCUDASetTargetDevice(int dev) { s_nbCUDATargetDevice = (dev >= 0) ? dev : 0; }
+int  nbCUDAGetTargetDevice(void)    { return s_nbCUDATargetDevice; }
+
 static double* nbCUDAAllocSoAScratch(int nbody)
 {
     return (double*) mwCalloc((size_t) 7 * (size_t) nbody, sizeof(double));
