@@ -36,6 +36,16 @@ typedef struct NBodyState_s NBodyState;
  * here to avoid pulling in the enum definition. */
 typedef int NBodyStatus_int;
 
+/* GPU device selection. BOINC assigns one device per task via init_data
+ * (gpu_device_num); nbCUDASelectDevice binds it once at startup (before
+ * any GPU work), and every later CUDA/HIP call inherits it. An explicit
+ * --device overrides. nbCUDASetTargetDevice/Get store the chosen ordinal
+ * (the driver-API context init reads it). Default 0. Declared outside the
+ * NBODY_CUDA guard so the driver-API host TU sees them. */
+void nbCUDASelectDevice(int dev);
+void nbCUDASetTargetDevice(int dev);
+int  nbCUDAGetTargetDevice(void);
+
 #if NBODY_CUDA
 
 /* Opaque CUDA-side state. Full definitions are private to nbody_cuda.cu. */

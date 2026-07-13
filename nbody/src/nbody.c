@@ -436,6 +436,29 @@ int nbMain(const NBodyFlags* nbf)
 #if NBODY_CUDA
     if (nbf->useCUDA) nbCUDAPhase1Enable = 1;
     nbCUDAPhase1Force = nbf->phase1GPU;
+
+    /* Bind the GPU BOINC assigned to this task (init_data gpu_device_num),
+     * honoring an explicit --device override, ONCE at startup before any
+     * GPU work. Every later CUDA/HIP call inherits it. Without this the
+     * app always bound ordinal 0, so a task BOINC scheduled onto another
+     * GPU (e.g. via ignore_nvidia_dev) still ran on GPU 0. gpu_device_num
+     * is the real CUDA ordinal BOINC chose; <0 means standalone → 0. */
+    if (nbf->useCUDA)
+    {
+        /* gpu_device_num is the real CUDA ordinal BOINC assigned to this
+         * task. It is -1 when there is no BOINC assignment — i.e. running
+         * standalone with no init_data.xml — in which case we default to
+         * device 0. An explicit --device always wins. */
+        int gpuDev = mwGetBoincGPUDeviceNum();
+        const int fromBoinc = (gpuDev >= 0);
+        if (gpuDev < 0) gpuDev = 0;
+        if (nbf->devNum != 0) gpuDev = (int) nbf->devNum;
+
+        mw_printf("[nbody] GPU device %d (%s)\n", gpuDev,
+                  (nbf->devNum != 0) ? "--device"
+                                     : (fromBoinc ? "BOINC-assigned" : "standalone default"));
+        nbCUDASelectDevice(gpuDev);
+    }
 #endif
 
     NBodyCtx* ctx = &_ctx;
@@ -532,7 +555,8 @@ int nbMain(const NBodyFlags* nbf)
              * st->usesCUDA on a fully-supported configuration; on any
              * unsupported piece (custom Lua potential, EXACT criterion,
              * exotic disk/halo) it returns non-zero and we silently
-             * fall through to the CPU path. */
+             * fall through to the CPU path. The target GPU was already
+             * chosen in nbMain (nbCUDASetTargetDevice) before body-gen. */
             (void) nbInitCUDA(ctx, st);
         }
         #endif

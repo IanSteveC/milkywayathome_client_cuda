@@ -95,6 +95,17 @@ int mwGetBoincOpenCLDeviceIndex(void)
     return mwAppInitData.gpu_opencl_dev_index;
 }
 
+/* The real CUDA/coproc device ordinal BOINC assigned to this task
+ * (accounts for ignore_nvidia_dev etc.). Returns -1 when no BOINC
+ * assignment is available (standalone), so callers can default to 0. */
+int mwGetBoincGPUDeviceNum(void)
+{
+    if (!mwAppInitDataReady)
+        return -1;
+
+    return mwAppInitData.gpu_device_num;
+}
+
 const char* mwGetBoincOpenCLPlatformVendor(void)
 {
     const char* type = mwAppInitData.gpu_type;
@@ -333,6 +344,11 @@ const char* mwGetProjectPrefs(void)
 int mwGetBoincNumCPU(void)
 {
     return 0;
+}
+
+int mwGetBoincGPUDeviceNum(void)
+{
+    return -1;
 }
 
 int mwBoincInit(MWInitType type)

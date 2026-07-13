@@ -60,6 +60,7 @@
 #define cudaGetDevice            hipGetDevice
 #define cudaGetDeviceCount       hipGetDeviceCount
 #define cudaGetDeviceProperties  hipGetDeviceProperties
+#define cudaSetDevice            hipSetDevice
 #define cudaGetErrorString       hipGetErrorString
 #define cudaGetLastError         hipGetLastError
 #define cudaGraphDestroy         hipGraphDestroy

@@ -426,6 +426,27 @@ extern "C" int nbCUDABuffersGetNNode(const struct NBodyCUDABuffers* buffers)
     return buffers ? buffers->nNode : 0;
 }
 
+/* Select the GPU for the entire run — called once at startup (nbMain),
+ * before any GPU work. BOINC assigns one device per task via init_data
+ * (gpu_device_num); the app binds it here and every later CUDA call
+ * inherits it. An explicit --device overrides. */
+extern "C" void nbCUDASelectDevice(int dev)
+{
+    nbCUDASetTargetDevice(dev);
+#ifdef NBODY_CUDA_DRIVER_API
+    /* Driver-API build: create the primary context on `dev` now.
+     * nbEnsureCudaCtx binds cuDeviceGet(nbCUDAGetTargetDevice()). */
+    (void) nbEnsureCudaCtx();
+#else
+    cudaError_t e = cudaSetDevice(dev);
+    if (e != cudaSuccess)
+    {
+        fprintf(stderr, NBODY_GPU_TAG " could not select GPU device %d: %s — check --device / BOINC GPU assignment\n",
+                dev, cudaGetErrorString(e));
+    }
+#endif
+}
+
 extern "C" int nbCUDAGetDeviceSMCount(int* outSMs)
 {
     int count = 0;

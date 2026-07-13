@@ -121,6 +121,7 @@ const char* mwGetProjectPrefs(void);
 
 int mwGetBoincNumCPU(void);
 int mwGetBoincOpenCLDeviceIndex(void);
+int mwGetBoincGPUDeviceNum(void);
 const char* mwGetBoincOpenCLPlatformVendor(void);
 
 
