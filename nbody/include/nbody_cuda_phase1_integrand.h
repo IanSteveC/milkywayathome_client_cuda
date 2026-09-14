@@ -15,12 +15,12 @@ typedef struct __attribute__((aligned))
     dwarf_t type;
     real mass;
     real scaleLength;
-    real n;
+    real n, h, d;
     real p0;
     real r200;
     real ps, r1, rc;
     real W0, r_t, r_0, mu, rho0, rho1, sigma, phi0;
-    real rcut, rdecay, pcut, delta, m_nfw_cut, gamma1, psi_nfw_cut, psi_cut_cut;
+    real rcut, rdecay, pcut, delta, m_nfw_cut, const_gamma_func, psi_nfw_cut, psi_cut_cut;
     real m_nfw_r1, m_iso_r1, psi_nfw_r1, psi_iso_r1;
     real mcut_pref;
 } Dwarf;
@@ -134,7 +134,7 @@ NB_P1_QUAL real gammp(const real a, const real x)
 NB_P1_QUAL real gammq(const real a, const real x)
 {
     real gln;
-    if (x < 0.0 || a <= 0.0)
+    if (!(x >= 0.0 && a > 0.0))
     {
         fprintf(stderr, "WARNING: Invalid arguments in gammq (a=%f, x=%f)\n", a, x);
         return (__builtin_nanf (""));
@@ -187,8 +187,8 @@ NB_P1_QUAL static real nfw_den(const Dwarf* model, real r)
 #pragma GCC diagnostic ignored "-Wfloat-equal"
     if (rcut != 0.0) {
 #pragma GCC diagnostic pop
-        const real pcut = model->pcut;
         const real rdecay = model->rdecay;
+        const real pcut = model->pcut;
         const real delta = model->delta;
         if (r > rcut) {
             return pcut * pow_rn(r / rcut, delta) * exp_rn(-(r - rcut) / rdecay);
@@ -213,11 +213,11 @@ NB_P1_QUAL static real nfw_pot(const Dwarf* model, real r)
         const real rdecay = model->rdecay;
         const real delta = model->delta;
         const real m_nfw_cut = model->m_nfw_cut;
-        const real gamma1 = model->gamma1;
+        const real const_gamma_func = model->const_gamma_func;
         if (r > rcut) {
             return (
                 model->mcut_pref
-                * (((gamma1 - UpperIncompleteGammaFunc(delta + 3, r / rdecay)) / r)
+                * (((const_gamma_func - UpperIncompleteGammaFunc(delta + 3, r / rdecay)) / r)
                 + (UpperIncompleteGammaFunc(delta + 2, r / rdecay) / rdecay)) + m_nfw_cut / r
             );
         } else {
@@ -247,24 +247,32 @@ NB_P1_QUAL static real gen_hern_pot(const Dwarf* model, real r)
 
 NB_P1_QUAL static real einasto_den(const Dwarf* model, real r)
 {
-    const real mass __attribute__((unused)) = model->mass;
-    const real h = model->scaleLength;
+    const real M = model->mass;
+    const real rs = model->scaleLength;
     const real n = model->n;
-    real coeff = 1.0 / ( 4.0 * 3.14159265358979323846 * ((h) * (h) * (h)) * n * GammaFunc(3.0 * n));
-    real thing = pow_rn(r, ((real) 1.0 / (n)));
-    return coeff * exp_rn(-thing);
+    const real h = model->h;
+    const real d = model->d;
+    const real const_gamma_func = model->const_gamma_func;
+    real coeff = M / ( 4.0 * 3.14159265358979323846 * ((h) * (h) * (h)) * n * const_gamma_func);
+    real s = pow_rn(d, n) * r / rs;
+    real s_term = pow_rn(s, ((real) 1.0 / (n)));
+    return coeff * exp_rn(-s_term);
 }
 
 NB_P1_QUAL static real einasto_pot(const Dwarf* model, real r)
 {
-    const real mass = model->mass;
-    const real h = model->scaleLength;
+    const real M = model->mass;
+    const real rs = model->scaleLength;
     const real n = model->n;
-    real coeff = mass / (h * r);
-    real thing = pow_rn(r, 1.0 / n);
-    real term1 = UpperIncompleteGammaFunc(3.0 * n, thing);
-    real term2 = r * UpperIncompleteGammaFunc(2.0 * n, thing);
-    real term = 1.0 - ( term1 + term2 ) / GammaFunc(3.0 * n);
+    const real h = model->h;
+    const real d = model->d;
+    const real const_gamma_func = model->const_gamma_func;
+    real s = pow_rn(d, n) * r / rs;
+    real s_term = pow_rn(s, ((real) 1.0 / (n)));
+    real coeff = M / (h * s);
+    real term1 = UpperIncompleteGammaFunc(3.0 * n, s_term);
+    real term2 = s * UpperIncompleteGammaFunc(2.0 * n, s_term);
+    real term = 1.0 - ( term1 - term2 ) / const_gamma_func;
     return coeff * term;
 }
 
@@ -313,10 +321,10 @@ NB_P1_QUAL static real cored_pot(const Dwarf* model, real r)
     {
         const real delta = model->delta;
         const real rdecay = model->rdecay;
-        const real gamma1 = model->gamma1;
+        const real const_gamma_func = model->const_gamma_func;
         return (
             model->mcut_pref
-            * (((gamma1 - UpperIncompleteGammaFunc(delta + 3, r / rdecay)) * ((real) 1.0 / (r)))
+            * (((const_gamma_func - UpperIncompleteGammaFunc(delta + 3, r / rdecay)) * ((real) 1.0 / (r)))
             + (UpperIncompleteGammaFunc(delta + 2, r / rdecay) * ((real) 1.0 / (rdecay))))
             + ((m_nfw_cut + m_iso_r1 - m_nfw_r1) * ((real) 1.0 / (r)))
         );
@@ -383,7 +391,12 @@ NB_P1_QUAL real get_potential(const Dwarf* model, real r)
             pot_temp = gen_hern_pot(model, r );
             break;
         case Einasto:
-            printf("WARNING: Einsato dwarf currently has problems and should not be used \n");
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wfloat-equal"
+            if (model->h == 0.0) {
+#pragma GCC diagnostic pop
+                set_model_params(model);
+            }
             pot_temp = einasto_pot(model, r);
             break;
         case Cored:
@@ -432,7 +445,12 @@ NB_P1_QUAL real get_density(const Dwarf* model, real r)
             den_temp = gen_hern_den(model, r );
             break;
         case Einasto:
-            printf("WARNING: Einsato dwarf currently has problems and should not be used \n");
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wfloat-equal"
+            if (model->h == 0.0) {
+#pragma GCC diagnostic pop
+                set_model_params(model);
+            }
             den_temp = einasto_den(model, r);
             break;
         case Cored:
@@ -479,77 +497,119 @@ NB_P1_QUAL static inline real density( real r, const Dwarf* comp1, const Dwarf* 
 NB_P1_QUAL real first_derivative(real (*func)(const Dwarf*, real), real x, const Dwarf* comp1)
 {
     const real h = 0.001;
-    real p1 = 1.0 * (*func)(comp1, (x - 2.0 * h));
-    real p2 = - 8.0 * (*func)(comp1, (x - h) );
-    real p3 = - 1.0 * (*func)(comp1, (x + 2.0 * h));
-    real p4 = 8.0 * (*func)(comp1, (x + h));
-    real denom = ((real) 1.0 / (12.0 * h));
-    real deriv = (p1 + p2 + p3 + p4) * denom;
-    return deriv;
+    if (x >= 2.0 * h)
+    {
+        real p1 = 1.0 * (*func)(comp1, (x - 2.0 * h));
+        real p2 = - 8.0 * (*func)(comp1, (x - h) );
+        real p3 = - 1.0 * (*func)(comp1, (x + 2.0 * h));
+        real p4 = 8.0 * (*func)(comp1, (x + h));
+        return (p1 + p2 + p3 + p4) * ((real) 1.0 / (12.0 * h));
+    }
+    real f0 = (*func)(comp1, x);
+    real f1 = (*func)(comp1, x + h);
+    real f2 = (*func)(comp1, x + 2.0 * h);
+    real f3 = (*func)(comp1, x + 3.0 * h);
+    real f4 = (*func)(comp1, x + 4.0 * h);
+    return (-25.0 * f0 + 48.0 * f1 - 36.0 * f2 + 16.0 * f3 - 3.0 * f4) * ((real) 1.0 / (12.0 * h));
 }
 
-NB_P1_QUAL static inline real second_derivative(real (*func)(const Dwarf*, real), real x, const Dwarf* comp1)
+NB_P1_QUAL real second_derivative(real (*func)(const Dwarf*, real), real x, const Dwarf* comp1)
 {
     const real h = 0.001;
-    real p1 = - 1.0 * (*func)(comp1, (x + 2.0 * h));
-    real p2 = 16.0 * (*func)(comp1, (x + h));
-    real p3 = -30.0 * (*func)(comp1, (x));
-    real p4 = 16.0 * (*func)(comp1, (x - h));
-    real p5 = - 1.0 * (*func)(comp1, (x - 2.0 * h));
-    real denom = ((real) 1.0 / (12.0 * h * h));
-    real deriv = (p1 + p2 + p3 + p4 + p5) * denom;
-    return deriv;
+    if (x >= 2.0 * h)
+    {
+        real p1 = - 1.0 * (*func)(comp1, (x + 2.0 * h));
+        real p2 = 16.0 * (*func)(comp1, (x + h));
+        real p3 = -30.0 * (*func)(comp1, (x));
+        real p4 = 16.0 * (*func)(comp1, (x - h));
+        real p5 = - 1.0 * (*func)(comp1, (x - 2.0 * h));
+        return (p1 + p2 + p3 + p4 + p5) * ((real) 1.0 / (12.0 * h * h));
+    }
+    real f0 = (*func)(comp1, x);
+    real f1 = (*func)(comp1, x + h);
+    real f2 = (*func)(comp1, x + 2.0 * h);
+    real f3 = (*func)(comp1, x + 3.0 * h);
+    real f4 = (*func)(comp1, x + 4.0 * h);
+    return (35.0 * f0 - 104.0 * f1 + 114.0 * f2 - 56.0 * f3 + 11.0 * f4) * ((real) 1.0 / (12.0 * h * h));
 }
 
 /* devirtualized stencils (direct calls -> inlinable on device) */
 NB_P1_QUAL real first_derivative_pot( real x, const Dwarf* comp1)
 {
     const real h = 0.001;
-    real p1 = 1.0 * get_potential(comp1, (x - 2.0 * h));
-    real p2 = - 8.0 * get_potential(comp1, (x - h) );
-    real p3 = - 1.0 * get_potential(comp1, (x + 2.0 * h));
-    real p4 = 8.0 * get_potential(comp1, (x + h));
-    real denom = ((real) 1.0 / (12.0 * h));
-    real deriv = (p1 + p2 + p3 + p4) * denom;
-    return deriv;
+    if (x >= 2.0 * h)
+    {
+        real p1 = 1.0 * get_potential(comp1, (x - 2.0 * h));
+        real p2 = - 8.0 * get_potential(comp1, (x - h) );
+        real p3 = - 1.0 * get_potential(comp1, (x + 2.0 * h));
+        real p4 = 8.0 * get_potential(comp1, (x + h));
+        return (p1 + p2 + p3 + p4) * ((real) 1.0 / (12.0 * h));
+    }
+    real f0 = get_potential(comp1, x);
+    real f1 = get_potential(comp1, x + h);
+    real f2 = get_potential(comp1, x + 2.0 * h);
+    real f3 = get_potential(comp1, x + 3.0 * h);
+    real f4 = get_potential(comp1, x + 4.0 * h);
+    return (-25.0 * f0 + 48.0 * f1 - 36.0 * f2 + 16.0 * f3 - 3.0 * f4) * ((real) 1.0 / (12.0 * h));
 }
 
 NB_P1_QUAL real first_derivative_den( real x, const Dwarf* comp1)
 {
     const real h = 0.001;
-    real p1 = 1.0 * get_density(comp1, (x - 2.0 * h));
-    real p2 = - 8.0 * get_density(comp1, (x - h) );
-    real p3 = - 1.0 * get_density(comp1, (x + 2.0 * h));
-    real p4 = 8.0 * get_density(comp1, (x + h));
-    real denom = ((real) 1.0 / (12.0 * h));
-    real deriv = (p1 + p2 + p3 + p4) * denom;
-    return deriv;
+    if (x >= 2.0 * h)
+    {
+        real p1 = 1.0 * get_density(comp1, (x - 2.0 * h));
+        real p2 = - 8.0 * get_density(comp1, (x - h) );
+        real p3 = - 1.0 * get_density(comp1, (x + 2.0 * h));
+        real p4 = 8.0 * get_density(comp1, (x + h));
+        return (p1 + p2 + p3 + p4) * ((real) 1.0 / (12.0 * h));
+    }
+    real f0 = get_density(comp1, x);
+    real f1 = get_density(comp1, x + h);
+    real f2 = get_density(comp1, x + 2.0 * h);
+    real f3 = get_density(comp1, x + 3.0 * h);
+    real f4 = get_density(comp1, x + 4.0 * h);
+    return (-25.0 * f0 + 48.0 * f1 - 36.0 * f2 + 16.0 * f3 - 3.0 * f4) * ((real) 1.0 / (12.0 * h));
 }
 
 NB_P1_QUAL static inline real second_derivative_pot( real x, const Dwarf* comp1)
 {
     const real h = 0.001;
-    real p1 = - 1.0 * get_potential(comp1, (x + 2.0 * h));
-    real p2 = 16.0 * get_potential(comp1, (x + h));
-    real p3 = -30.0 * get_potential(comp1, (x));
-    real p4 = 16.0 * get_potential(comp1, (x - h));
-    real p5 = - 1.0 * get_potential(comp1, (x - 2.0 * h));
-    real denom = ((real) 1.0 / (12.0 * h * h));
-    real deriv = (p1 + p2 + p3 + p4 + p5) * denom;
-    return deriv;
+    if (x >= 2.0 * h)
+    {
+        real p1 = - 1.0 * get_potential(comp1, (x + 2.0 * h));
+        real p2 = 16.0 * get_potential(comp1, (x + h));
+        real p3 = -30.0 * get_potential(comp1, (x));
+        real p4 = 16.0 * get_potential(comp1, (x - h));
+        real p5 = - 1.0 * get_potential(comp1, (x - 2.0 * h));
+        return (p1 + p2 + p3 + p4 + p5) * ((real) 1.0 / (12.0 * h * h));
+    }
+    real f0 = get_potential(comp1, x);
+    real f1 = get_potential(comp1, x + h);
+    real f2 = get_potential(comp1, x + 2.0 * h);
+    real f3 = get_potential(comp1, x + 3.0 * h);
+    real f4 = get_potential(comp1, x + 4.0 * h);
+    return (35.0 * f0 - 104.0 * f1 + 114.0 * f2 - 56.0 * f3 + 11.0 * f4) * ((real) 1.0 / (12.0 * h * h));
 }
 
 NB_P1_QUAL static inline real second_derivative_den( real x, const Dwarf* comp1)
 {
     const real h = 0.001;
-    real p1 = - 1.0 * get_density(comp1, (x + 2.0 * h));
-    real p2 = 16.0 * get_density(comp1, (x + h));
-    real p3 = -30.0 * get_density(comp1, (x));
-    real p4 = 16.0 * get_density(comp1, (x - h));
-    real p5 = - 1.0 * get_density(comp1, (x - 2.0 * h));
-    real denom = ((real) 1.0 / (12.0 * h * h));
-    real deriv = (p1 + p2 + p3 + p4 + p5) * denom;
-    return deriv;
+    if (x >= 2.0 * h)
+    {
+        real p1 = - 1.0 * get_density(comp1, (x + 2.0 * h));
+        real p2 = 16.0 * get_density(comp1, (x + h));
+        real p3 = -30.0 * get_density(comp1, (x));
+        real p4 = 16.0 * get_density(comp1, (x - h));
+        real p5 = - 1.0 * get_density(comp1, (x - 2.0 * h));
+        return (p1 + p2 + p3 + p4 + p5) * ((real) 1.0 / (12.0 * h * h));
+    }
+    real f0 = get_density(comp1, x);
+    real f1 = get_density(comp1, x + h);
+    real f2 = get_density(comp1, x + 2.0 * h);
+    real f3 = get_density(comp1, x + 3.0 * h);
+    real f4 = get_density(comp1, x + 4.0 * h);
+    return (35.0 * f0 - 104.0 * f1 + 114.0 * f2 - 56.0 * f3 + 11.0 * f4) * ((real) 1.0 / (12.0 * h * h));
 }
 
 
@@ -559,14 +619,14 @@ NB_P1_QUAL static real fun(real ri, const Dwarf* comp1, const Dwarf* comp2, real
     real first_deriv_density = 0.0;
     real second_deriv_density = 0.0;
     real denominator = 0.0;
-    real first_deriv_psi = first_derivative_pot( ri, comp1) + first_derivative_pot( ri, comp2);
-    real second_deriv_psi = second_derivative_pot( ri, comp1) + second_derivative_pot( ri, comp2);
+    real first_deriv_psi = first_derivative(get_potential, ri, comp1) + first_derivative(get_potential, ri, comp2);
+    real second_deriv_psi = second_derivative(get_potential, ri, comp1) + second_derivative(get_potential, ri, comp2);
     if (!isDark) {
-        first_deriv_density = first_derivative_den( ri, comp1);
-        second_deriv_density = second_derivative_den( ri, comp1);
+        first_deriv_density = first_derivative(get_density, ri, comp1);
+        second_deriv_density = second_derivative(get_density, ri, comp1);
     } else {
-        first_deriv_density = first_derivative_den( ri, comp2);
-        second_deriv_density = second_derivative_den( ri, comp2);
+        first_deriv_density = first_derivative(get_density, ri, comp2);
+        second_deriv_density = second_derivative(get_density, ri, comp2);
     }
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wfloat-equal"

@@ -1699,44 +1699,80 @@ extern "C" __global__ void nbCUDAPhase1FunBlockKernel(
     const nbp1::Dwarf* dc = isDark ? &c2 : &c1;
     __shared__ double ev[29];
 
+    /* v1.97 CPU stencils: centered 5-point when ri >= 2h, otherwise a
+     * forward 5-point stencil over (x, x+h, .., x+4h) so no probe goes
+     * negative (nbody_math_funcs.c first_derivative/second_derivative).
+     * ri is block-uniform, so this branch never diverges. */
+    const int centered = (ri >= 2.0 * h);
+
     const int l = threadIdx.x;
     if (l < 29)
     {
         double v = 0.0;
-        switch (l) {
-            /* pot c1 / c2, 1st-derivative points (p1..p4 order) */
-            case 0:  v = nbp1::get_potential(&c1, (ri - 2.0 * h)); break;
-            case 1:  v = nbp1::get_potential(&c1, (ri - h) );      break;
-            case 2:  v = nbp1::get_potential(&c1, (ri + 2.0 * h)); break;
-            case 3:  v = nbp1::get_potential(&c1, (ri + h));       break;
-            case 4:  v = nbp1::get_potential(&c2, (ri - 2.0 * h)); break;
-            case 5:  v = nbp1::get_potential(&c2, (ri - h) );      break;
-            case 6:  v = nbp1::get_potential(&c2, (ri + 2.0 * h)); break;
-            case 7:  v = nbp1::get_potential(&c2, (ri + h));       break;
-            /* pot c1 / c2, 2nd-derivative points (p1..p5 order) */
-            case 8:  v = nbp1::get_potential(&c1, (ri + 2.0 * h)); break;
-            case 9:  v = nbp1::get_potential(&c1, (ri + h));       break;
-            case 10: v = nbp1::get_potential(&c1, (ri));           break;
-            case 11: v = nbp1::get_potential(&c1, (ri - h));       break;
-            case 12: v = nbp1::get_potential(&c1, (ri - 2.0 * h)); break;
-            case 13: v = nbp1::get_potential(&c2, (ri + 2.0 * h)); break;
-            case 14: v = nbp1::get_potential(&c2, (ri + h));       break;
-            case 15: v = nbp1::get_potential(&c2, (ri));           break;
-            case 16: v = nbp1::get_potential(&c2, (ri - h));       break;
-            case 17: v = nbp1::get_potential(&c2, (ri - 2.0 * h)); break;
-            /* density (component per isDark), 1st then 2nd points */
-            case 18: v = nbp1::get_density(dc, (ri - 2.0 * h)); break;
-            case 19: v = nbp1::get_density(dc, (ri - h) );      break;
-            case 20: v = nbp1::get_density(dc, (ri + 2.0 * h)); break;
-            case 21: v = nbp1::get_density(dc, (ri + h));       break;
-            case 22: v = nbp1::get_density(dc, (ri + 2.0 * h)); break;
-            case 23: v = nbp1::get_density(dc, (ri + h));       break;
-            case 24: v = nbp1::get_density(dc, (ri));           break;
-            case 25: v = nbp1::get_density(dc, (ri - h));       break;
-            case 26: v = nbp1::get_density(dc, (ri - 2.0 * h)); break;
-            /* potential at ri for the denominator */
-            case 27: v = nbp1::get_potential(&c1, ri); break;
-            case 28: v = nbp1::get_potential(&c2, ri); break;
+        if (centered)
+        {
+            switch (l) {
+                /* pot c1 / c2, 1st-derivative points (p1..p4 order) */
+                case 0:  v = nbp1::get_potential(&c1, (ri - 2.0 * h)); break;
+                case 1:  v = nbp1::get_potential(&c1, (ri - h) );      break;
+                case 2:  v = nbp1::get_potential(&c1, (ri + 2.0 * h)); break;
+                case 3:  v = nbp1::get_potential(&c1, (ri + h));       break;
+                case 4:  v = nbp1::get_potential(&c2, (ri - 2.0 * h)); break;
+                case 5:  v = nbp1::get_potential(&c2, (ri - h) );      break;
+                case 6:  v = nbp1::get_potential(&c2, (ri + 2.0 * h)); break;
+                case 7:  v = nbp1::get_potential(&c2, (ri + h));       break;
+                /* pot c1 / c2, 2nd-derivative points (p1..p5 order) */
+                case 8:  v = nbp1::get_potential(&c1, (ri + 2.0 * h)); break;
+                case 9:  v = nbp1::get_potential(&c1, (ri + h));       break;
+                case 10: v = nbp1::get_potential(&c1, (ri));           break;
+                case 11: v = nbp1::get_potential(&c1, (ri - h));       break;
+                case 12: v = nbp1::get_potential(&c1, (ri - 2.0 * h)); break;
+                case 13: v = nbp1::get_potential(&c2, (ri + 2.0 * h)); break;
+                case 14: v = nbp1::get_potential(&c2, (ri + h));       break;
+                case 15: v = nbp1::get_potential(&c2, (ri));           break;
+                case 16: v = nbp1::get_potential(&c2, (ri - h));       break;
+                case 17: v = nbp1::get_potential(&c2, (ri - 2.0 * h)); break;
+                /* density (component per isDark), 1st then 2nd points */
+                case 18: v = nbp1::get_density(dc, (ri - 2.0 * h)); break;
+                case 19: v = nbp1::get_density(dc, (ri - h) );      break;
+                case 20: v = nbp1::get_density(dc, (ri + 2.0 * h)); break;
+                case 21: v = nbp1::get_density(dc, (ri + h));       break;
+                case 22: v = nbp1::get_density(dc, (ri + 2.0 * h)); break;
+                case 23: v = nbp1::get_density(dc, (ri + h));       break;
+                case 24: v = nbp1::get_density(dc, (ri));           break;
+                case 25: v = nbp1::get_density(dc, (ri - h));       break;
+                case 26: v = nbp1::get_density(dc, (ri - 2.0 * h)); break;
+                /* potential at ri for the denominator */
+                case 27: v = nbp1::get_potential(&c1, ri); break;
+                case 28: v = nbp1::get_potential(&c2, ri); break;
+            }
+        }
+        else
+        {
+            /* forward stencil: f0..f4 at x + k*h, k = 0..4. The CPU's
+             * first_ and second_derivative probe the same five points, so
+             * one evaluation per point serves both (pure functions). */
+            switch (l) {
+                case 0:  v = nbp1::get_potential(&c1, ri);           break;
+                case 1:  v = nbp1::get_potential(&c1, ri + h);       break;
+                case 2:  v = nbp1::get_potential(&c1, ri + 2.0 * h); break;
+                case 3:  v = nbp1::get_potential(&c1, ri + 3.0 * h); break;
+                case 4:  v = nbp1::get_potential(&c1, ri + 4.0 * h); break;
+                case 5:  v = nbp1::get_potential(&c2, ri);           break;
+                case 6:  v = nbp1::get_potential(&c2, ri + h);       break;
+                case 7:  v = nbp1::get_potential(&c2, ri + 2.0 * h); break;
+                case 8:  v = nbp1::get_potential(&c2, ri + 3.0 * h); break;
+                case 9:  v = nbp1::get_potential(&c2, ri + 4.0 * h); break;
+                case 10: v = nbp1::get_density(dc, ri);           break;
+                case 11: v = nbp1::get_density(dc, ri + h);       break;
+                case 12: v = nbp1::get_density(dc, ri + 2.0 * h); break;
+                case 13: v = nbp1::get_density(dc, ri + 3.0 * h); break;
+                case 14: v = nbp1::get_density(dc, ri + 4.0 * h); break;
+                /* potential at ri for the denominator */
+                case 27: v = nbp1::get_potential(&c1, ri); break;
+                case 28: v = nbp1::get_potential(&c2, ri); break;
+                default: break;
+            }
         }
         ev[l] = v;
     }
@@ -1744,28 +1780,42 @@ extern "C" __global__ void nbCUDAPhase1FunBlockKernel(
     if (l != 0) return;
 
     /* ---- combine: EXACT transcription of the CPU arithmetic ---- */
-    double p1, p2, p3, p4, p5, denom;
-    /* first_derivative(get_potential, ri, c1/c2) */
-    p1 = 1.0 * ev[0];  p2 = - 8.0 * ev[1];  p3 = - 1.0 * ev[2];  p4 = 8.0 * ev[3];
-    denom = ((double) 1.0 / (12.0 * h));
-    double fd1 = (p1 + p2 + p3 + p4) * denom;
-    p1 = 1.0 * ev[4];  p2 = - 8.0 * ev[5];  p3 = - 1.0 * ev[6];  p4 = 8.0 * ev[7];
-    double fd2 = (p1 + p2 + p3 + p4) * denom;
-    double first_deriv_psi = fd1 + fd2;
-    /* second_derivative(get_potential, ...) */
-    p1 = - 1.0 * ev[8];  p2 = 16.0 * ev[9];  p3 = -30.0 * ev[10]; p4 = 16.0 * ev[11]; p5 = - 1.0 * ev[12];
-    denom = ((double) 1.0 / (12.0 * h * h));
-    double sd1 = (p1 + p2 + p3 + p4 + p5) * denom;
-    p1 = - 1.0 * ev[13]; p2 = 16.0 * ev[14]; p3 = -30.0 * ev[15]; p4 = 16.0 * ev[16]; p5 = - 1.0 * ev[17];
-    double sd2 = (p1 + p2 + p3 + p4 + p5) * denom;
-    double second_deriv_psi = sd1 + sd2;
-    /* density derivatives (single component) */
-    p1 = 1.0 * ev[18]; p2 = - 8.0 * ev[19]; p3 = - 1.0 * ev[20]; p4 = 8.0 * ev[21];
-    denom = ((double) 1.0 / (12.0 * h));
-    double first_deriv_density = (p1 + p2 + p3 + p4) * denom;
-    p1 = - 1.0 * ev[22]; p2 = 16.0 * ev[23]; p3 = -30.0 * ev[24]; p4 = 16.0 * ev[25]; p5 = - 1.0 * ev[26];
-    denom = ((double) 1.0 / (12.0 * h * h));
-    double second_deriv_density = (p1 + p2 + p3 + p4 + p5) * denom;
+    double first_deriv_psi, second_deriv_psi, first_deriv_density, second_deriv_density;
+    if (centered)
+    {
+        double p1, p2, p3, p4, p5;
+        /* first_derivative(get_potential, ri, c1/c2): (p1+p2+p3+p4) * inv(12.0*h) */
+        p1 = 1.0 * ev[0];  p2 = - 8.0 * ev[1];  p3 = - 1.0 * ev[2];  p4 = 8.0 * ev[3];
+        double fd1 = (p1 + p2 + p3 + p4) * ((double) 1.0 / (12.0 * h));
+        p1 = 1.0 * ev[4];  p2 = - 8.0 * ev[5];  p3 = - 1.0 * ev[6];  p4 = 8.0 * ev[7];
+        double fd2 = (p1 + p2 + p3 + p4) * ((double) 1.0 / (12.0 * h));
+        first_deriv_psi = fd1 + fd2;
+        /* second_derivative(get_potential, ...): (p1+..+p5) * inv(12.0*h*h) */
+        p1 = - 1.0 * ev[8];  p2 = 16.0 * ev[9];  p3 = -30.0 * ev[10]; p4 = 16.0 * ev[11]; p5 = - 1.0 * ev[12];
+        double sd1 = (p1 + p2 + p3 + p4 + p5) * ((double) 1.0 / (12.0 * h * h));
+        p1 = - 1.0 * ev[13]; p2 = 16.0 * ev[14]; p3 = -30.0 * ev[15]; p4 = 16.0 * ev[16]; p5 = - 1.0 * ev[17];
+        double sd2 = (p1 + p2 + p3 + p4 + p5) * ((double) 1.0 / (12.0 * h * h));
+        second_deriv_psi = sd1 + sd2;
+        /* density derivatives (single component) */
+        p1 = 1.0 * ev[18]; p2 = - 8.0 * ev[19]; p3 = - 1.0 * ev[20]; p4 = 8.0 * ev[21];
+        first_deriv_density = (p1 + p2 + p3 + p4) * ((double) 1.0 / (12.0 * h));
+        p1 = - 1.0 * ev[22]; p2 = 16.0 * ev[23]; p3 = -30.0 * ev[24]; p4 = 16.0 * ev[25]; p5 = - 1.0 * ev[26];
+        second_deriv_density = (p1 + p2 + p3 + p4 + p5) * ((double) 1.0 / (12.0 * h * h));
+    }
+    else
+    {
+        /* forward stencils, same expressions as the CPU:
+         * 1st: (-25 f0 + 48 f1 - 36 f2 + 16 f3 - 3 f4) * inv(12h)
+         * 2nd: ( 35 f0 -104 f1 +114 f2 - 56 f3 +11 f4) * inv(12h^2) */
+        double fd1 = (-25.0 * ev[0] + 48.0 * ev[1] - 36.0 * ev[2] + 16.0 * ev[3] - 3.0 * ev[4]) * ((double) 1.0 / (12.0 * h));
+        double fd2 = (-25.0 * ev[5] + 48.0 * ev[6] - 36.0 * ev[7] + 16.0 * ev[8] - 3.0 * ev[9]) * ((double) 1.0 / (12.0 * h));
+        first_deriv_psi = fd1 + fd2;
+        double sd1 = (35.0 * ev[0] - 104.0 * ev[1] + 114.0 * ev[2] - 56.0 * ev[3] + 11.0 * ev[4]) * ((double) 1.0 / (12.0 * h * h));
+        double sd2 = (35.0 * ev[5] - 104.0 * ev[6] + 114.0 * ev[7] - 56.0 * ev[8] + 11.0 * ev[9]) * ((double) 1.0 / (12.0 * h * h));
+        second_deriv_psi = sd1 + sd2;
+        first_deriv_density  = (-25.0 * ev[10] + 48.0 * ev[11] - 36.0 * ev[12] + 16.0 * ev[13] - 3.0 * ev[14]) * ((double) 1.0 / (12.0 * h));
+        second_deriv_density = (35.0 * ev[10] - 104.0 * ev[11] + 114.0 * ev[12] - 56.0 * ev[13] + 11.0 * ev[14]) * ((double) 1.0 / (12.0 * h * h));
+    }
 
     if (first_deriv_psi == 0.0) first_deriv_psi = 1.0e-6;
     double dsqden_dpsisq = second_deriv_density * ((double) 1.0 / (first_deriv_psi))

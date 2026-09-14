@@ -11,6 +11,7 @@
 #include "nbody_caustic.h"
 #include "nbody_bessel.h"
 #include "nbody_potential.h"
+#include "nbody_mass.h"
 
 #include "nbody_friction.h"
 

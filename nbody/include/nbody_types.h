@@ -71,7 +71,7 @@ along with Milkyway@Home.  If not, see <http://www.gnu.org/licenses/>.
 #include "milkyway_math.h"
 #include "milkyway_extra.h"
 #include "milkyway_util.h"
-#include "nbody_graphics.h"
+//#include "nbody_graphics.h"
 #include "nbody_potential_types.h"
 
 #include <lua.h>
@@ -370,7 +370,7 @@ typedef struct MW_ALIGN_TYPE NBodyState_s
     Body* bestLikelihoodBodyTab;     /* this one used for out file generation */
     mwvector* acctab;         /* Corresponding accelerations of bodies */
     mwvector* orbitTrace;     /* Trail of center of masses for display purposes */
-    scene_t* scene;
+    //scene_t* scene;
 
     mwvector* shiftByLMC;      /* Accelerations on MW from LMC */
     mwvector LMCpos;        /* Position of LMC */
@@ -455,7 +455,7 @@ typedef struct MW_ALIGN_TYPE NBodyState_s
 
 #define NBODYSTATE_TYPE "NBodyState"
 
-#define EMPTY_NBODYSTATE { EMPTY_TREE, NULL, NULL, NULL, NULL, NULL, NULL, NULL,            \
+#define EMPTY_NBODYSTATE { EMPTY_TREE, NULL, NULL, NULL, NULL, NULL, NULL,                  \
                            NULL, ZERO_VECTOR, ZERO_VECTOR,                                  \
                            NULL, 0,                                                         \
                            0, 0, 0,                                                         \
@@ -540,6 +540,8 @@ typedef struct MW_ALIGN_TYPE NBodyCtx_s
 
     unsigned int calibrationRuns; //for calibrating time-dependent potentials
 
+    real samplingBounds[2];    /* radial sampling bounds for mixed dwarf components; 0 uses dynamic defaults */
+
     real Ntsteps;              /* number of time steps to run when manual control is on */
     time_t checkpointT;        /* Period to checkpoint when not using BOINC */
     unsigned int nStep;
@@ -561,6 +563,7 @@ typedef struct MW_ALIGN_TYPE NBodyCtx_s
                          FALSE, 0,                                                                            \
                          0, 0, 0, FALSE, 0,                                                                   \
                          0,                                                                                   \
+                         {0.0, 0.0},                                                                          \
                          0, 0, 0,                                                                             \
                          EMPTY_POTENTIAL}
 

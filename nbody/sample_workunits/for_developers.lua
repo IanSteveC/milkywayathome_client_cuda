@@ -22,7 +22,7 @@
 
 -- IMPORTANT -- IMPORTANT -- IMPORTANT -- IMPORTANT -- IMPORTANT -- 
 -- Structural changes to this file also need to be changed in the 
--- lua files in the test_env_lua directory (nbody/sample_workunits/test_env_lua/)
+-- lua files in the tests directory (nbody/tests/mixeddwarf_models/) and (nbody/tests/orphan_models/)
 -- especially if the changes are not backwards compatible with the previous format
 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
 
@@ -56,7 +56,7 @@ totalBodies           = 40000       -- -- NUMBER OF TOTAL BODIES                
 totalLightBodies      = 20000       -- -- NUMBER OF LIGHT MATTER BODIES                                        -- --
 
 nbodyLikelihoodMethod = "EMD"       -- -- HIST COMPARE METHOD                                                  -- --
-nbodyMinVersion       = "1.95"      -- -- MINIMUM APP VERSION                                                  -- --
+nbodyMinVersion       = "1.96"      -- -- MINIMUM APP VERSION                                                  -- --
 
 run_null_potential    = false       -- -- NULL POTENTIAL SWITCH                                                -- --
 use_tree_code         = true        -- -- USE TREE CODE NOT EXACT                                              -- --
@@ -70,7 +70,7 @@ LMC_cutoff            = 16          -- --  kpc  This is used only for Hernquist 
 preset_LMC_Mass       = 449865.888  -- -- SMU (used unless specified in arguments)                             -- --
 LMC_DynamicalFriction = true    -- -- LMC DYNAMICAL FRICTION SWITCH (IGNORED IF NO LMC)                        -- --
 CoulombLogarithm      = 15      -- -- ln(r/1.22*CoulombLogarithm) (Patel et al. 2020) COULOMB LOGARITHM USED   -- --
-                                -- -- IN DYNAMICAL FRACTION CALCULATION                                        -- --
+                                -- -- IN DYNAMICAL FRICTION CALCULATION                                        -- --
 
 SunGCDist             = 8.0       -- -- Distance between Sun and Galactic Center                               -- --
 SunVelx               = 10.3      -- -- Sun's x-velocity (kpc/Gyr) (Hogg et al. (2005))                        -- --
@@ -177,9 +177,8 @@ end
 
 --component 1 and 2 for 2 component model. comp 1 should always be updated even for 1 component, as it is used to 
 --calculate dwarf-based softening length
-comp1 = Dwarf.plummer{mass = mass_l, scaleLength = rscale_l} -- Dwarf Options: plummer, nfw, general_hernquist, cored
-comp2 = Dwarf.plummer{mass = mass_d, scaleLength = rscale_d} -- Dwarf Options: plummer, nfw, general_hernquist, cored
-
+comp1 = Dwarf.plummer{mass = mass_l, scaleLength = rscale_l} -- Dwarf Options: plummer, nfw, general_hernquist, cored, king, einasto
+comp2 = Dwarf.plummer{mass = mass_d, scaleLength = rscale_d} -- Dwarf Options: plummer, nfw, general_hernquist, cored, king, einasto
 
 
 
@@ -240,7 +239,7 @@ numCalibrationRuns = 0
 -- -- -- -- -- -- These options only work if you compile nbody with  -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
 -- -- -- -- -- -- the -DNBODY_DEV_OPTIONS set to on -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- - -- -- -- -- -- -- --  
 
-useMultiOutputs       = false     -- -- WRITE MULTIPLE OUTPUTS                                                            -- --
+useMultiOutputs       = false       -- -- WRITE MULTIPLE OUTPUTS                                                           -- --
 freqOfOutputs         = 100         -- -- FREQUENCY OF WRITING OUTPUTS                                                     -- --
 
 timestep_control      = false       -- -- control number of steps                                                          -- --
@@ -249,8 +248,16 @@ Ntime_steps           = 3000        -- -- number of timesteps to run            
 use_max_soft_par      = false       -- -- limit the softening parameter value to a max value                               -- --
 max_soft_par          = 0.8         -- -- kpc, if switch above is turned on, use this as the max softening parameter       -- --
 
-generateInitialOutput = false       -- -- save initial dwarf galaxy state to initial.out before evolution                   -- --
+generateInitialOutput = false       -- -- save initial dwarf galaxy state to initial.out before evolution                  -- --
 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+
+-- -- -- -- -- -- -- -- --  Manual Sampling Bounds -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+-- If set to 0.0, will use default profile specific radial sampling bounds from nbody_mixeddwarf.c    -- -- 
+-- NOTE: Only works when using mixeddwarf (not single component models)                               -- -- 
+
+bound1 = 0.0         -- -- kpc, radial sampling bound for component 1                                 -- --
+bound2 = 0.0         -- -- kpc, radial sampling bound for component 2                                 -- -- 
+-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
         
         
 -- -- -- -- -- -- -- -- -- CHECK TIMESTEPS -- -- -- -- -- -- -- -- 
@@ -263,11 +270,11 @@ function makePotential()
    else
         --NOTE: To exclude a component from the potential, set component to "<component_name>.none" and include only an arbitrary "mass" argument
         return  Potential.create{
-            spherical = Spherical.hernquist{ mass  = 1.52954402e5, scale = 0.7 },
-            disk      = Disk.miyamotoNagai{ mass = 4.45865888e5, scaleLength = 6.5, scaleHeight = 0.26 },
-            disk2     = Disk.none{ mass = 3.0e5 },
-            halo      = Halo.logarithmic{ vhalo = 74.61, scaleLength = 12.0, flattenZ = 1.0 }
-        }--vhalo = 74.61 kpc/gy = 73 km/s
+            spherical = Spherical.hernquist{ mass  = 20243.9650, scale = 0.442 },
+            disk      = Disk.miyamotoNagai{ mass = 305908.804, scaleLength = 3.0, scaleHeight = 0.28 },
+            disk2     = Disk.none{ mass = 0.0 },
+            halo      = Halo.nfwmass{ scaleLength = 16.0, mass = 1.96591393e6 }
+        }
    end
 end
 
@@ -314,18 +321,17 @@ function get_soft_par()
     --softening parameter only calculated based on dwarf,
     --so if manual bodies is turned on the calculated s.p. may be too large
     if (UseOldSofteningLength == 1) then
-        sp = calculateEps2(totalBodies, rscale_l, rscale_d, mass_l, mass_d)
+        sp_l, sp_cross, sp_d = calculateEps2(totalBodies, rscale_l, rscale_d, mass_l, mass_d)
     else
-        sp = calculateEps2Dwarf(comp1, totalLightBodies)
+        sp_l, sp_cross, sp_d = calculateEps2Dwarf(comp1, comp2, totalLightBodies, totalBodies)
     end
-    if ((manual_bodies or use_max_soft_par) and (sp > max_soft_par^2)) then --dealing with softening parameter squared
+    if ((manual_bodies or use_max_soft_par) and (sp_cross > max_soft_par^2)) then --dealing with softening parameter squared
         print("Using maximum softening parameter value of " .. tostring(max_soft_par) .. " kpc")
         return max_soft_par^2
     else
-        return sp
+        return {sp_l, sp_cross, sp_d}
     end
 end
-
 
 function makeContext()
    return NBodyCtx.create{
@@ -378,7 +384,8 @@ function makeContext()
       LMCscale2     = LMC_cutoff,
       LMCDynaFric   = LMC_DynamicalFriction,
       coulomb_log   = CoulombLogarithm,
-      calibrationRuns = numCalibrationRuns
+      calibrationRuns = numCalibrationRuns,
+      samplingBounds = {bound1, bound2}
    }
 end
 
@@ -445,14 +452,15 @@ function makeBodies(ctx, potential)
     if(ModelComponents == 2) then         
 
         firstModel = predefinedModels.mixeddwarf{
-            nbody         = totalBodies,
-            nbody_baryon  = totalLightBodies,
-            prng          = prng,
-            position      = finalPosition,
-            velocity      = finalVelocity,
-            comp1         = comp1,
-            comp2         = comp2,
-            ignore        = true
+            nbody            = totalBodies,
+            nbody_baryon     = totalLightBodies,
+            prng             = prng,
+            position         = finalPosition,
+            velocity         = finalVelocity,
+            comp1            = comp1,
+            comp2            = comp2,
+            ignore           = true,
+            samplingBounds   = {bound1, bound2}
         }
         
     elseif(ModelComponents == 1) then
