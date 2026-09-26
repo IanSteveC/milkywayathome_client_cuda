@@ -65,6 +65,7 @@ typedef int   hipDeviceAttribute_t;
  * no HIP runtime is present. */
 #define NB_HIP_API(_) \
   _(hipError_t,  hipInit,                  (unsigned int)) \
+  _(hipError_t,  hipRuntimeGetVersion,     (int*)) \
   _(hipError_t,  hipDeviceGet,             (hipDevice_t*, int)) \
   _(hipError_t,  hipGetDeviceCount,        (int*)) \
   _(hipError_t,  hipDeviceGetName,         (char*, int, hipDevice_t)) \

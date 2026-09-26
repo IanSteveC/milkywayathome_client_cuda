@@ -23,6 +23,13 @@ BOINC_DIR="${BOINC_DIR:-/home/ian/builds/boinc}"
 MINGW="${MINGW:-x86_64-w64-mingw32}"
 GFX_ARCHS="${GFX_ARCHS:-gfx906;gfx908;gfx90a;gfx1010;gfx1012;gfx1030;gfx1031;gfx1032;gfx1034;gfx1035;gfx1100;gfx1101;gfx1102;gfx1103;gfx1200;gfx1201}"
 BUILD_DIR="${BUILD_DIR:-build_win_hip}"
+# Code object ABI version for the embedded device code. ROCm 7's clang
+# defaults to v6 (ELF EI_ABIVERSION 4), which only HIP 6.3+ runtimes load.
+# Windows hosts do not all have one: Radeon VII / Vega (gfx906) sit on AMD's
+# legacy driver branch whose amdhip64.dll is HIP 5.x, and it rejects a v6
+# object with "shared object initialization failed" (hipModuleLoadData 303).
+# v4 loads on every HIP 5.x/6.x/7.x runtime and does not change the kernels.
+HIP_COV="${HIP_COV:-4}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 4)}"
 
 while getopts "a:d:j:h" opt; do
@@ -92,13 +99,17 @@ INCS="-I$B/include -I$BOINC_DIR -I$BOINC_DIR/api -I$BOINC_DIR/lib \
  -I$SOURCE_DIR/popt/include -I$SOURCE_DIR/lua/include -I$SOURCE_DIR/milkyway/include \
  -I$SOURCE_DIR/dSFMT -I$SOURCE_DIR/nbody/include -I$SOURCE_DIR/crlibm -I$SOURCE_DIR/openpa/include"
 echo "[genco] hipcc --genco (arches: $GFX_ARCHS)"
-"$HIPCC" --genco $OFFLOAD \
+"$HIPCC" --genco $OFFLOAD -mcode-object-version=$HIP_COV \
     -ffp-contract=off -O3 -DNDEBUG -std=gnu++17 -fPIC \
     -DDOUBLEPREC=1 -DDSFMT_MEXP=19937 -D__HIP_ROCclr__=1 -DNBODY_HIP_GENCO \
     $INCS \
     -o "$B/gen/nbody_hip.co" "$SOURCE_DIR/nbody/src/nbody_cuda.cu"
 python3 "$SOURCE_DIR/tools/bin2c.py" "$B/gen/nbody_hip.co" nb_cuda_fatbin > "$B/gen/nbody_cuda_fatbin.h"
 echo "[bin2c] embedded: $(stat -c%s "$B/gen/nbody_hip.co") bytes"
+# verify: EI_ABIVERSION 2 = v4, 3 = v5, 4 = v6 (must be <= 3 for HIP 5.x runtimes)
+"$ROCM_PATH/llvm/bin/clang-offload-bundler" --unbundle --type=o --input="$B/gen/nbody_hip.co" \
+    --targets=hipv4-amdgcn-amd-amdhsa--gfx906 --output="$B/gen/nbody_hip_gfx906.elf" 2>/dev/null \
+  && echo "[verify] gfx906 code object $("$ROCM_PATH/llvm/bin/llvm-readelf" -h "$B/gen/nbody_hip_gfx906.elf" | grep -E 'ABI Version' | tr -s ' ') (HIP_COV=$HIP_COV)"
 
 # ---------- 3. build ----------
 cmake --build "$B" -j "$JOBS" --target milkyway_nbody

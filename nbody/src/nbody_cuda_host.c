@@ -359,7 +359,7 @@ NBodyStatus_int nbInitCUDA(const NBodyCtx* ctx, NBodyState* st)
 
     if (!nbCUDACanHandlePotential(ctx))
     {
-        mw_printf(NBODY_GPU_TAG " potential model not supported by CUDA backend — falling back to CPU\n");
+        mw_printf(NBODY_GPU_TAG " potential model not supported by " NBODY_GPU_NAME " backend — falling back to CPU\n");
         return NBODY_ERROR;
     }
 
@@ -368,14 +368,14 @@ NBodyStatus_int nbInitCUDA(const NBodyCtx* ctx, NBodyState* st)
     #endif
     if (ctx->criterion == Exact && !NBODY_CUDA_FORCE_EXACT)
     {
-        mw_printf(NBODY_GPU_TAG " EXACT criterion not yet wired into CUDA path — use TreeCode\n");
+        mw_printf(NBODY_GPU_TAG " EXACT criterion not yet wired into " NBODY_GPU_NAME " path — use TreeCode\n");
         return NBODY_ERROR;
     }
 
     int numSMs = 0;
     if (nbCUDAGetDeviceSMCount(&numSMs) != 0)
     {
-        mw_printf(NBODY_GPU_TAG " no CUDA device available\n");
+        mw_printf(NBODY_GPU_TAG " no " NBODY_GPU_NAME " device available\n");
         return NBODY_ERROR;
     }
 
@@ -556,7 +556,7 @@ NBodyStatus_int nbInitCUDA(const NBodyCtx* ctx, NBodyState* st)
                     fwrite(&pz[i], sizeof(double), 1, f);
                 }
                 fclose(f);
-                mw_printf("[DEBUG] dumped %d CUDA body positions to %s\n", nb, path);
+                mw_printf("[DEBUG] dumped %d " NBODY_GPU_NAME " body positions to %s\n", nb, path);
             }
         }
         free(px); free(py); free(pz); free(vx); free(vy); free(vz);
@@ -811,6 +811,7 @@ NBodyStatus_int nbRunSystemCUDA(const NBodyCtx* ctx, NBodyState* st, const void*
     {
         if (nbStepSystemCUDA(ctx, st) != NBODY_SUCCESS)
         {
+            mw_printf(NBODY_GPU_TAG " step %d/%d failed\n", (int) st->step, (int) ctx->nStep);
             return NBODY_ERROR;
         }
 
@@ -846,7 +847,7 @@ NBodyStatus_int nbRunSystemCUDA(const NBodyCtx* ctx, NBodyState* st, const void*
                 if (nbCUDABuffersIsAsyncMarshalPending(st->cudaBuffers))
                 {
                     double* sc = nbCUDAAllocSoAScratch(st->nbody);
-                    if (!sc) return NBODY_ERROR;
+                    if (!sc) { mw_printf(NBODY_GPU_TAG " step %d: scratch alloc failed\n", (int) st->step); return NBODY_ERROR; }
                     int rc = nbCUDABuffersWaitAsyncBodies(
                         st->cudaBuffers,
                         sc + 0 * (size_t) st->nbody,
@@ -857,13 +858,14 @@ NBodyStatus_int nbRunSystemCUDA(const NBodyCtx* ctx, NBodyState* st, const void*
                         sc + 5 * (size_t) st->nbody);
                     if (rc == 0) nbCUDAUnpackSoAToBodies(sc, st->bodytab, st->nbody);
                     free(sc);
-                    if (rc != 0) return NBODY_ERROR;
+                    if (rc != 0) { mw_printf(NBODY_GPU_TAG " step %d/%d: best-likelihood async wait failed\n", (int) st->step, (int) ctx->nStep); return NBODY_ERROR; }
                     (void) nbGetLikelihoodForBest(ctx, st, nbf);
                 }
                 /* Kick off async D2H of THIS step's bodies — to be
                  * drained on the NEXT iteration. */
                 if (nbCUDABuffersStartAsyncBodyMarshal(st->cudaBuffers) != NBODY_SUCCESS)
                 {
+                    mw_printf(NBODY_GPU_TAG " step %d/%d: best-likelihood async start failed\n", (int) st->step, (int) ctx->nStep);
                     return NBODY_ERROR;
                 }
             }
@@ -894,10 +896,12 @@ NBodyStatus_int nbRunSystemCUDA(const NBodyCtx* ctx, NBodyState* st, const void*
         {
             if (nbCUDAMarshalBodiesFromDevice(st) != NBODY_SUCCESS)
             {
+                mw_printf(NBODY_GPU_TAG " step %d: checkpoint marshal failed\n", (int) st->step);
                 return NBODY_ERROR;
             }
             if (nbWriteCheckpoint(ctx, st))
             {
+                mw_printf(NBODY_GPU_TAG " step %d: checkpoint write failed\n", (int) st->step);
                 return NBODY_ERROR;
             }
             mw_checkpoint_completed();
@@ -910,7 +914,7 @@ NBodyStatus_int nbRunSystemCUDA(const NBodyCtx* ctx, NBodyState* st, const void*
     if (nbf && ctx->useBestLike && nbCUDABuffersIsAsyncMarshalPending(st->cudaBuffers))
     {
         double* sc = nbCUDAAllocSoAScratch(st->nbody);
-        if (!sc) return NBODY_ERROR;
+        if (!sc) { mw_printf(NBODY_GPU_TAG " final drain: scratch alloc failed\n"); return NBODY_ERROR; }
         int rc = nbCUDABuffersWaitAsyncBodies(
             st->cudaBuffers,
             sc + 0 * (size_t) st->nbody,
@@ -921,7 +925,7 @@ NBodyStatus_int nbRunSystemCUDA(const NBodyCtx* ctx, NBodyState* st, const void*
             sc + 5 * (size_t) st->nbody);
         if (rc == 0) nbCUDAUnpackSoAToBodies(sc, st->bodytab, st->nbody);
         free(sc);
-        if (rc != 0) return NBODY_ERROR;
+        if (rc != 0) { mw_printf(NBODY_GPU_TAG " final drain: best-likelihood async wait failed\n"); return NBODY_ERROR; }
         (void) nbGetLikelihoodForBest(ctx, st, nbf);
     }
 
@@ -929,6 +933,7 @@ NBodyStatus_int nbRunSystemCUDA(const NBodyCtx* ctx, NBodyState* st, const void*
      * (likelihood/histogram/output) sees the latest pos/vel. */
     if (nbCUDAMarshalBodiesFromDevice(st) != NBODY_SUCCESS)
     {
+        mw_printf(NBODY_GPU_TAG " final marshal from device failed\n");
         return NBODY_ERROR;
     }
 

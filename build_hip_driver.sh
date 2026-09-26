@@ -14,6 +14,7 @@ set -euo pipefail
 BOINC_ROOT="${BOINC_ROOT:-/home/ian/builds/boinc}"
 ROCM_PATH="${ROCM_PATH:-/opt/rocm}"
 GFX="${GFX:-gfx1030}"
+HIP_COV="${HIP_COV:-4}"     # code object version; keep in step with build_hip_win.sh
 BUILD_DIR="${BUILD_DIR:-build_hip_driver}"
 JOBS="${JOBS:-$(nproc)}"
 
@@ -55,7 +56,7 @@ fi
 
 # ---------- 2. device code object via hipcc --genco ----------
 echo "[genco] hipcc --genco --offload-arch=$GFX (-DNBODY_HIP_GENCO)"
-"$HIPCC" --genco --offload-arch="$GFX" \
+"$HIPCC" --genco --offload-arch="$GFX" -mcode-object-version=$HIP_COV \
     -ffp-contract=off -O3 -DNDEBUG -std=gnu++17 -fPIC \
     -DDOUBLEPREC=1 -DDSFMT_MEXP=19937 -D__HIP_ROCclr__=1 -DNBODY_HIP_GENCO \
     $INCS \
