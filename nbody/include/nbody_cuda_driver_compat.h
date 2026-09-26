@@ -73,7 +73,11 @@ extern CUresult nb_last_launch_err;
 static inline const char* cudaGetErrorString(CUresult e) {
     const char* s = NULL;
     cuGetErrorString(e, &s);
+#if defined(NBODY_HIP_DRIVER_API)
+    return s ? s : "unknown HIP error";
+#else
     return s ? s : "unknown CUDA driver error";
+#endif
 }
 
 static inline CUresult cudaGetLastError(void) {

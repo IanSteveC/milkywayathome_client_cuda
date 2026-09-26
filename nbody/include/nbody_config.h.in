@@ -80,8 +80,10 @@
  * [nbody_hip]; CUDA builds tag [nbody_cuda]. */
 #if NBODY_HIP || defined(NBODY_HIP_DRIVER_API)
   #define NBODY_GPU_TAG "[nbody_hip]"
+  #define NBODY_GPU_NAME "HIP"
 #else
   #define NBODY_GPU_TAG "[nbody_cuda]"
+  #define NBODY_GPU_NAME "CUDA"
 #endif
 
 

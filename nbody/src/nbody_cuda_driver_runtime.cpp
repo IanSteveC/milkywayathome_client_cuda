@@ -26,8 +26,12 @@
 /* Windows GPU-host log prefix: HIP module-API build vs CUDA driver-API. */
 #if defined(NBODY_HIP_DRIVER_API)
 #  define NB_WIN_TAG "[nbody_hip_win]"
+#  define NB_WIN_API "hip"          /* the cu* calls below are macro-mapped to hip* */
+#  define NB_WIN_IMAGE "code object"
 #else
 #  define NB_WIN_TAG "[nbody_cuda_win]"
+#  define NB_WIN_API "cu"
+#  define NB_WIN_IMAGE "fatbin"
 #endif
 
 /* Defined in nbody_cuda_host.c (compiled into this driver-API host too).
@@ -54,11 +58,18 @@ int nbEnsureCudaCtx(void) {
 #if defined(NBODY_HIP_DYNLOAD)
     /* resolve amdhip64 (LoadLibrary/dlopen) before the first HIP call */
     if (nbHipLoadRuntime()) { g_ctx_ok = 1; return -1; }
+    {
+        /* which HIP this driver ships: an old (HIP 5.x) runtime is the usual
+         * reason a code object fails to load */
+        int rtv = 0;
+        if (hipRuntimeGetVersion(&rtv) == hipSuccess)
+            fprintf(stderr, NB_WIN_TAG " HIP runtime version %d\n", rtv);
+    }
 #endif
 
     CUresult e = cuInit(0);
     if (e != CUDA_SUCCESS) {
-        fprintf(stderr, NB_WIN_TAG " cuInit failed: %d\n", (int)e);
+        fprintf(stderr, NB_WIN_TAG " " NB_WIN_API "Init failed: %d\n", (int)e);
         g_ctx_ok = 1;
         return -1;
     }
@@ -75,13 +86,13 @@ int nbEnsureCudaCtx(void) {
      * any future runtime-API interop possible */
     e = cuDevicePrimaryCtxRetain(&g_ctx, g_dev);
     if (e != CUDA_SUCCESS) {
-        fprintf(stderr, NB_WIN_TAG " cuDevicePrimaryCtxRetain failed: %d\n", (int)e);
+        fprintf(stderr, NB_WIN_TAG " " NB_WIN_API "DevicePrimaryCtxRetain failed: %d\n", (int)e);
         g_ctx_ok = 1;
         return -1;
     }
     e = cuCtxSetCurrent(g_ctx);
     if (e != CUDA_SUCCESS) {
-        fprintf(stderr, NB_WIN_TAG " cuCtxSetCurrent failed: %d\n", (int)e);
+        fprintf(stderr, NB_WIN_TAG " " NB_WIN_API "CtxSetCurrent failed: %d\n", (int)e);
         g_ctx_ok = 1;
         return -1;
     }
@@ -104,15 +115,20 @@ int nbCudaLoadModule(void) {
     if (e != CUDA_SUCCESS) {
         const char* s = NULL;
         cuGetErrorString(e, &s);
-        fprintf(stderr, NB_WIN_TAG " cuModuleLoadData(fatbin) failed: %s\n",
-                s ? s : "?");
+        fprintf(stderr, NB_WIN_TAG " " NB_WIN_API "ModuleLoadData(" NB_WIN_IMAGE ") failed: %s (%d)\n",
+                s ? s : "?", (int)e);
+#if defined(NBODY_HIP_DRIVER_API)
+        if ((int)e == 303)   /* hipErrorSharedObjectInitFailed */
+            fprintf(stderr, NB_WIN_TAG " the HIP runtime rejected the embedded code object - "
+                            "usually an AMD driver whose HIP runtime is too old for it\n");
+#endif
         return -1;
     }
 
     int missing = 0;
 #define NB_RESOLVE_FN(k) \
     if (cuModuleGetFunction(&nbfn_##k, g_mod, #k) != CUDA_SUCCESS) { \
-        fprintf(stderr, NB_WIN_TAG " kernel not found in fatbin: %s\n", #k); \
+        fprintf(stderr, NB_WIN_TAG " kernel not found in " NB_WIN_IMAGE ": %s\n", #k); \
         missing++; \
     }
     NB_KERNEL_LIST(NB_RESOLVE_FN)

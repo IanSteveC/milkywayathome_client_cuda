@@ -453,27 +453,27 @@ extern "C" int nbCUDAGetDeviceSMCount(int* outSMs)
     cudaError_t err = cudaGetDeviceCount(&count);
     if (err != cudaSuccess)
     {
-        fprintf(stderr, NBODY_GPU_TAG " cudaGetDeviceCount: %s (%d)\n",
+        fprintf(stderr, NBODY_GPU_TAG " device count query failed: %s (%d)\n",
                 cudaGetErrorString(err), (int) err);
         return -1;
     }
     if (count <= 0)
     {
-        fprintf(stderr, NBODY_GPU_TAG " no CUDA devices reported (count=%d)\n", count);
+        fprintf(stderr, NBODY_GPU_TAG " no " NBODY_GPU_NAME " devices reported (count=%d)\n", count);
         return -1;
     }
     int dev = 0;
     err = cudaGetDevice(&dev);
     if (err != cudaSuccess)
     {
-        fprintf(stderr, NBODY_GPU_TAG " cudaGetDevice: %s\n", cudaGetErrorString(err));
+        fprintf(stderr, NBODY_GPU_TAG " current device query failed: %s\n", cudaGetErrorString(err));
         return -1;
     }
     cudaDeviceProp prop;
     err = cudaGetDeviceProperties(&prop, dev);
     if (err != cudaSuccess)
     {
-        fprintf(stderr, NBODY_GPU_TAG " cudaGetDeviceProperties: %s\n", cudaGetErrorString(err));
+        fprintf(stderr, NBODY_GPU_TAG " device properties query failed: %s\n", cudaGetErrorString(err));
         return -1;
     }
     fprintf(stderr, NBODY_GPU_TAG " device %d: %s, SMs=%d, compute=%d.%d\n",
@@ -571,7 +571,7 @@ extern "C" int nbCUDABuffersDumpTree(const struct NBodyCUDABuffers* buffers,
             }
             fprintf(stderr, "[DEBUG] tree dup count: %d\n", dupCount);
             fclose(f);
-            fprintf(stderr, "[DEBUG] dumped %d CUDA tree-cell records to %s\n", nrecs, path);
+            fprintf(stderr, "[DEBUG] dumped %d " NBODY_GPU_NAME " tree-cell records to %s\n", nrecs, path);
             free(stkCell); free(stkPos);
             rc = nrecs;
         }
@@ -648,7 +648,7 @@ extern "C" int nbCUDABuffersDumpTreeQuad(const struct NBodyCUDABuffers* buffers,
             }
             #undef EMIT
             fclose(f);
-            fprintf(stderr, "[DEBUG] dumped %d CUDA tree+quad records to %s\n", nrecs, path);
+            fprintf(stderr, "[DEBUG] dumped %d " NBODY_GPU_NAME " tree+quad records to %s\n", nrecs, path);
             free(stkCell); free(stkPos);
             rc = nrecs;
         }
@@ -721,7 +721,7 @@ extern "C" NBodyStatus_int nbCUDABuffersAlloc(struct NBodyCUDABuffers** outBuffe
     }
     if (err != cudaSuccess)
     {
-        fprintf(stderr, NBODY_GPU_TAG " cudaMalloc failed at buffer %d/%d: %s\n",
+        fprintf(stderr, NBODY_GPU_TAG " device allocation failed at buffer %d/%d: %s\n",
                 allocated, 10, cudaGetErrorString(err));
         for (int i = 0; i < allocated; ++i)
         {
@@ -740,7 +740,7 @@ extern "C" NBodyStatus_int nbCUDABuffersAlloc(struct NBodyCUDABuffers** outBuffe
     err = cudaMalloc((void**) &b->d_types, typeBytes);
     if (err != cudaSuccess)
     {
-        fprintf(stderr, NBODY_GPU_TAG " cudaMalloc failed for d_types: %s\n",
+        fprintf(stderr, NBODY_GPU_TAG " device allocation failed for d_types: %s\n",
                 cudaGetErrorString(err));
         for (int i = 0; i < 10; ++i) { cudaFree(*specs[i].ptr); *specs[i].ptr = NULL; }
         free(b);
@@ -759,7 +759,7 @@ static int nbCUDAMallocRecorded(void** ptr, size_t bytes,
     cudaError_t err = cudaMalloc(ptr, bytes);
     if (err != cudaSuccess)
     {
-        fprintf(stderr, NBODY_GPU_TAG " cudaMalloc(%zu) failed: %s\n",
+        fprintf(stderr, NBODY_GPU_TAG " device allocation (%zu bytes) failed: %s\n",
                 bytes, cudaGetErrorString(err));
         return -1;
     }
@@ -1080,32 +1080,80 @@ extern "C" NBodyStatus_int nbCUDABuffersDownloadBodies(const struct NBodyCUDABuf
  * The bestLikeStream first waits on the default stream (via a
  * temporary event) so the D2H sees the just-completed step's
  * outputs, then queues 6 cudaMemcpyAsync calls — one per SoA axis. */
+/* Diagnostic: name the failing call in the async marshal path and the
+ * runtime's error string (these returns were silent). */
+static NBodyStatus_int nbAsyncMarshalFail(const char* what, cudaError_t e)
+{
+    fprintf(stderr, NBODY_GPU_TAG " async best-likelihood marshal: %s failed: %s (%d)\n",
+            what, cudaGetErrorString(e), (int) e);
+    return NBODY_CUDA_ERROR;
+}
+
 extern "C" NBodyStatus_int nbCUDABuffersStartAsyncBodyMarshal(struct NBodyCUDABuffers* buffers)
 {
-    if (!buffers || !buffers->h_pinnedBodies || !buffers->bestLikeStream) return NBODY_CUDA_ERROR;
-    if (buffers->bestLikePending) return NBODY_CUDA_ERROR;
+    if (!buffers || !buffers->h_pinnedBodies || !buffers->bestLikeStream) {
+        fprintf(stderr, NBODY_GPU_TAG " async best-likelihood marshal: start called without pinned buffer/stream\n");
+        return NBODY_CUDA_ERROR;
+    }
+    if (buffers->bestLikePending) {
+        fprintf(stderr, NBODY_GPU_TAG " async best-likelihood marshal: start called while a copy is still pending\n");
+        return NBODY_CUDA_ERROR;
+    }
+
+    cudaError_t e;
+    const size_t bytes = (size_t) buffers->nbody * sizeof(double);
+    double* p = buffers->h_pinnedBodies;
+
+#if defined(NBODY_HIP_DRIVER_API)
+    /* Windows HIP build: the HIP 5.x runtime in AMD's legacy (Vega /
+     * Radeon VII) driver rejects hipStreamWaitEvent on the null stream
+     * with hipErrorInvalidValue, and that call is how the two-stream
+     * form below keeps the next step's kernels from overwriting
+     * d_pos/d_vel while the copy is in flight. Queue the copies on the
+     * null stream instead: the stream orders them after this step's
+     * kernels and before the next step's on its own, they are still
+     * asynchronous to the host (pinned destination), and the event
+     * lets the host wait for the copy alone - so the CPU likelihood
+     * still overlaps the next GPU step exactly as before. No
+     * cross-stream waits, no per-step event. Same data, same steps. */
+    {
+        cudaStream_t s = 0;
+        if ((e = cudaMemcpyAsync(p + 0 * buffers->nbody, buffers->d_posX, bytes, cudaMemcpyDeviceToHost, s)) != cudaSuccess) return nbAsyncMarshalFail("async D2H posX", e);
+        if ((e = cudaMemcpyAsync(p + 1 * buffers->nbody, buffers->d_posY, bytes, cudaMemcpyDeviceToHost, s)) != cudaSuccess) return nbAsyncMarshalFail("async D2H posY", e);
+        if ((e = cudaMemcpyAsync(p + 2 * buffers->nbody, buffers->d_posZ, bytes, cudaMemcpyDeviceToHost, s)) != cudaSuccess) return nbAsyncMarshalFail("async D2H posZ", e);
+        if ((e = cudaMemcpyAsync(p + 3 * buffers->nbody, buffers->d_velX, bytes, cudaMemcpyDeviceToHost, s)) != cudaSuccess) return nbAsyncMarshalFail("async D2H velX", e);
+        if ((e = cudaMemcpyAsync(p + 4 * buffers->nbody, buffers->d_velY, bytes, cudaMemcpyDeviceToHost, s)) != cudaSuccess) return nbAsyncMarshalFail("async D2H velY", e);
+        if ((e = cudaMemcpyAsync(p + 5 * buffers->nbody, buffers->d_velZ, bytes, cudaMemcpyDeviceToHost, s)) != cudaSuccess) return nbAsyncMarshalFail("async D2H velZ", e);
+        if ((e = cudaEventRecord(buffers->bestLikeEvent, s)) != cudaSuccess) return nbAsyncMarshalFail("event record (default stream)", e);
+        buffers->bestLikePending = 1;
+        return NBODY_CUDA_SUCCESS;
+    }
+#endif
 
     /* Make bestLikeStream wait for the default stream so we capture
      * the most-recent step's body data, not last step's. */
     cudaEvent_t deps;
-    if (cudaEventCreateWithFlags(&deps, cudaEventDisableTiming) != cudaSuccess) return NBODY_CUDA_ERROR;
-    if (cudaEventRecord(deps, 0) != cudaSuccess) { cudaEventDestroy(deps); return NBODY_CUDA_ERROR; }
-    if (cudaStreamWaitEvent(buffers->bestLikeStream, deps, 0) != cudaSuccess) {
-        cudaEventDestroy(deps); return NBODY_CUDA_ERROR;
+    if ((e = cudaEventCreateWithFlags(&deps, cudaEventDisableTiming)) != cudaSuccess)
+        return nbAsyncMarshalFail("event create", e);
+    if ((e = cudaEventRecord(deps, 0)) != cudaSuccess) {
+        cudaEventDestroy(deps); return nbAsyncMarshalFail("event record (default stream)", e);
     }
-    cudaEventDestroy(deps);
+    if ((e = cudaStreamWaitEvent(buffers->bestLikeStream, deps, 0)) != cudaSuccess) {
+        cudaEventDestroy(deps); return nbAsyncMarshalFail("stream wait event (bestLike stream)", e);
+    }
+    if ((e = cudaEventDestroy(deps)) != cudaSuccess)
+        fprintf(stderr, NBODY_GPU_TAG " async best-likelihood marshal: event destroy returned %s (%d), continuing\n",
+                cudaGetErrorString(e), (int) e);
 
-    const size_t bytes = (size_t) buffers->nbody * sizeof(double);
-    double* p = buffers->h_pinnedBodies;
     cudaStream_t s = buffers->bestLikeStream;
 
-    if (cudaMemcpyAsync(p + 0 * buffers->nbody, buffers->d_posX, bytes, cudaMemcpyDeviceToHost, s) != cudaSuccess) return NBODY_CUDA_ERROR;
-    if (cudaMemcpyAsync(p + 1 * buffers->nbody, buffers->d_posY, bytes, cudaMemcpyDeviceToHost, s) != cudaSuccess) return NBODY_CUDA_ERROR;
-    if (cudaMemcpyAsync(p + 2 * buffers->nbody, buffers->d_posZ, bytes, cudaMemcpyDeviceToHost, s) != cudaSuccess) return NBODY_CUDA_ERROR;
-    if (cudaMemcpyAsync(p + 3 * buffers->nbody, buffers->d_velX, bytes, cudaMemcpyDeviceToHost, s) != cudaSuccess) return NBODY_CUDA_ERROR;
-    if (cudaMemcpyAsync(p + 4 * buffers->nbody, buffers->d_velY, bytes, cudaMemcpyDeviceToHost, s) != cudaSuccess) return NBODY_CUDA_ERROR;
-    if (cudaMemcpyAsync(p + 5 * buffers->nbody, buffers->d_velZ, bytes, cudaMemcpyDeviceToHost, s) != cudaSuccess) return NBODY_CUDA_ERROR;
-    if (cudaEventRecord(buffers->bestLikeEvent, s) != cudaSuccess) return NBODY_CUDA_ERROR;
+    if ((e = cudaMemcpyAsync(p + 0 * buffers->nbody, buffers->d_posX, bytes, cudaMemcpyDeviceToHost, s)) != cudaSuccess) return nbAsyncMarshalFail("async D2H posX", e);
+    if ((e = cudaMemcpyAsync(p + 1 * buffers->nbody, buffers->d_posY, bytes, cudaMemcpyDeviceToHost, s)) != cudaSuccess) return nbAsyncMarshalFail("async D2H posY", e);
+    if ((e = cudaMemcpyAsync(p + 2 * buffers->nbody, buffers->d_posZ, bytes, cudaMemcpyDeviceToHost, s)) != cudaSuccess) return nbAsyncMarshalFail("async D2H posZ", e);
+    if ((e = cudaMemcpyAsync(p + 3 * buffers->nbody, buffers->d_velX, bytes, cudaMemcpyDeviceToHost, s)) != cudaSuccess) return nbAsyncMarshalFail("async D2H velX", e);
+    if ((e = cudaMemcpyAsync(p + 4 * buffers->nbody, buffers->d_velY, bytes, cudaMemcpyDeviceToHost, s)) != cudaSuccess) return nbAsyncMarshalFail("async D2H velY", e);
+    if ((e = cudaMemcpyAsync(p + 5 * buffers->nbody, buffers->d_velZ, bytes, cudaMemcpyDeviceToHost, s)) != cudaSuccess) return nbAsyncMarshalFail("async D2H velZ", e);
+    if ((e = cudaEventRecord(buffers->bestLikeEvent, s)) != cudaSuccess) return nbAsyncMarshalFail("event record (bestLike stream)", e);
 
     /* Make the default stream wait on bestLikeEvent so the NEXT
      * step's integration kernel (which writes d_posX/Y/Z and
@@ -1113,7 +1161,8 @@ extern "C" NBodyStatus_int nbCUDABuffersStartAsyncBodyMarshal(struct NBodyCUDABu
      * them. Without this, step N+1's integration races with step
      * N's async D2H. The host can still proceed in parallel —
      * we're only enforcing GPU-stream ordering. */
-    if (cudaStreamWaitEvent(0, buffers->bestLikeEvent, 0) != cudaSuccess) return NBODY_CUDA_ERROR;
+    if ((e = cudaStreamWaitEvent(0, buffers->bestLikeEvent, 0)) != cudaSuccess)
+        return nbAsyncMarshalFail("stream wait event (default stream)", e);
 
     buffers->bestLikePending = 1;
     return NBODY_CUDA_SUCCESS;
@@ -1127,10 +1176,17 @@ extern "C" NBodyStatus_int nbCUDABuffersWaitAsyncBodies(struct NBodyCUDABuffers*
                                                         double* hPosX, double* hPosY, double* hPosZ,
                                                         double* hVelX, double* hVelY, double* hVelZ)
 {
-    if (!buffers || !buffers->bestLikeEvent) return NBODY_CUDA_ERROR;
-    if (!buffers->bestLikePending) return NBODY_CUDA_ERROR;
+    if (!buffers || !buffers->bestLikeEvent) {
+        fprintf(stderr, NBODY_GPU_TAG " async best-likelihood marshal: wait called without event\n");
+        return NBODY_CUDA_ERROR;
+    }
+    if (!buffers->bestLikePending) {
+        fprintf(stderr, NBODY_GPU_TAG " async best-likelihood marshal: wait called with no copy pending\n");
+        return NBODY_CUDA_ERROR;
+    }
 
-    if (cudaEventSynchronize(buffers->bestLikeEvent) != cudaSuccess) return NBODY_CUDA_ERROR;
+    cudaError_t e = cudaEventSynchronize(buffers->bestLikeEvent);
+    if (e != cudaSuccess) return nbAsyncMarshalFail("event synchronize", e);
 
     const size_t bytes = (size_t) buffers->nbody * sizeof(double);
     const double* p = buffers->h_pinnedBodies;
