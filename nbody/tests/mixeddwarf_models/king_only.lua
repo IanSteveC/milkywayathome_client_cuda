@@ -244,7 +244,7 @@ numCalibrationRuns = 0
 useMultiOutputs       = true     -- -- WRITE MULTIPLE OUTPUTS                                                            -- --
 freqOfOutputs         = 100         -- -- FREQUENCY OF WRITING OUTPUTS                                                     -- --
 
-timestep_control      = true       -- -- control number of steps                                                          -- --
+timestep_control      = false       -- -- control number of steps                                                          -- --
 Ntime_steps           = 5000        -- -- number of timesteps to run                                                       -- --
 
 use_max_soft_par      = false       -- -- limit the softening parameter value to a max value                               -- --
@@ -275,29 +275,8 @@ end
 function get_timestep()
     if(timestep_control) then
         t = (evolveTime) / (Ntime_steps)
-    elseif(ModelComponents == 2) then
-
-        --Mass of a single dark matter sphere enclosed within light rscale
-        mass_enc_d = mass_d * (rscale_l)^3 * ( (rscale_l)^2 + (rscale_d)^2  )^(-3.0/2.0)
-
-        --Mass of a single light matter sphere enclosed within dark rscale
-        mass_enc_l = mass_l * (rscale_d)^3 * ( (rscale_l)^2 + (rscale_d)^2  )^(-3.0/2.0)
-
-        s1 = (rscale_l)^3 / (mass_enc_d + mass_l)
-        s2 = (rscale_d)^3 / (mass_enc_l + mass_d)
-        
-        --return the smaller time step
-        if(s1 < s2) then
-            s = s1
-        else
-            s = s2
-        end
-        
-        -- I did it this way so there was only one place to change the time step. 
-        t = (1.0 / 100.0) * ( pi_4_3 * s)^(1.0/2.0)
-        
-    else 
-        t = sqr(1.0 / 10.0) * sqrt((pi_4_3 * cube(rscale_l)) / (mass_l))
+    else
+        t = calculateTimestep(comp1, comp2)
     end
 
     if ((evolveTime/t > 150000 or t ~= t) and not timestep_control) then
@@ -306,7 +285,6 @@ function get_timestep()
         TooManyTimesteps = 1
         t = evolveTime/4.0
     end
-
     return t
 end
 
