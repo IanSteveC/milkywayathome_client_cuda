@@ -180,7 +180,7 @@ NB_P1_QUAL static real plummer_pot(const Dwarf* model, real r)
 NB_P1_QUAL static real nfw_den(const Dwarf* model, real r)
 {
     const real rscale = model->scaleLength;
-    const real p0 = model->p0;
+    const real ps = model->ps;
     const real rcut = model->rcut;
     real R = r / rscale;
 #pragma GCC diagnostic push
@@ -194,16 +194,16 @@ NB_P1_QUAL static real nfw_den(const Dwarf* model, real r)
             return pcut * pow_rn(r / rcut, delta) * exp_rn(-(r - rcut) / rdecay);
         }
         else {
-            return p0 * ((real) 1.0 / (R)) * ((real) 1.0 / (((1.0 + R) * (1.0 + R))));
+            return ps * ((real) 1.0 / (R)) * ((real) 1.0 / (((1.0 + R) * (1.0 + R))));
         }
     }
-    return p0 * ((real) 1.0 / (R)) * ((real) 1.0 / (((1.0 + R) * (1.0 + R))));
+    return ps * ((real) 1.0 / (R)) * ((real) 1.0 / (((1.0 + R) * (1.0 + R))));
 }
 
 NB_P1_QUAL static real nfw_pot(const Dwarf* model, real r)
 {
     const real rscale = model->scaleLength;
-    const real p0 = model->p0;
+    const real ps = model->ps;
     const real rcut = model->rcut;
     real R = r / rscale;
 #pragma GCC diagnostic push
@@ -224,11 +224,11 @@ NB_P1_QUAL static real nfw_pot(const Dwarf* model, real r)
             const real psi_nfw_cut = model->psi_nfw_cut;
             const real psi_cut_cut = model->psi_cut_cut;
             const real m_nfw_cut = model->m_nfw_cut;
-            return (4.0 * 3.14159265358979323846 * p0 * ((rscale) * (rscale) * (rscale)) * log_rn(1.0 + R) * ((real) 1.0 / (r))
+            return (4.0 * 3.14159265358979323846 * ps * ((rscale) * (rscale) * (rscale)) * log_rn(1.0 + R) * ((real) 1.0 / (r))
                 - psi_nfw_cut + psi_cut_cut + m_nfw_cut / rcut);
         }
     }
-    return 4.0 * 3.14159265358979323846 * ((rscale) * (rscale)) * p0 * ((real) 1.0 / (R)) * log_rn(1.0 + R);
+    return 4.0 * 3.14159265358979323846 * ((rscale) * (rscale)) * ps * ((real) 1.0 / (R)) * log_rn(1.0 + R);
 }
 
 NB_P1_QUAL static real gen_hern_den(const Dwarf* model, real r)
@@ -379,42 +379,18 @@ NB_P1_QUAL real get_potential(const Dwarf* model, real r)
             pot_temp = plummer_pot(model, r);
             break;
         case NFW:
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wfloat-equal"
-            if (model->p0 == 0.0) {
-#pragma GCC diagnostic pop
-                set_model_params(model);
-            }
             pot_temp = nfw_pot(model, r );
             break;
         case General_Hernquist:
             pot_temp = gen_hern_pot(model, r );
             break;
         case Einasto:
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wfloat-equal"
-            if (model->h == 0.0) {
-#pragma GCC diagnostic pop
-                set_model_params(model);
-            }
             pot_temp = einasto_pot(model, r);
             break;
         case Cored:
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wfloat-equal"
-            if (model->p0 == 0.0) {
-#pragma GCC diagnostic pop
-                set_model_params(model);
-            }
             pot_temp = cored_pot(model, r);
             break;
         case King:
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wfloat-equal"
-            if (model->r_0 == 0.0) {
-#pragma GCC diagnostic pop
-                set_model_params(model);
-            }
             pot_temp = king_pot(model, r);
             break;
         case InvalidDwarf:
@@ -433,42 +409,18 @@ NB_P1_QUAL real get_density(const Dwarf* model, real r)
             den_temp = plummer_den(model, r);
             break;
         case NFW:
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wfloat-equal"
-            if (model->p0 == 0.0) {
-#pragma GCC diagnostic pop
-                set_model_params(model);
-            }
             den_temp = nfw_den(model, r );
             break;
         case General_Hernquist:
             den_temp = gen_hern_den(model, r );
             break;
         case Einasto:
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wfloat-equal"
-            if (model->h == 0.0) {
-#pragma GCC diagnostic pop
-                set_model_params(model);
-            }
             den_temp = einasto_den(model, r);
             break;
         case Cored:
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wfloat-equal"
-            if (model->p0 == 0.0) {
-#pragma GCC diagnostic pop
-                set_model_params(model);
-            }
             den_temp = cored_den(model, r);
             break;
         case King:
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wfloat-equal"
-            if (model->r_0 == 0.0) {
-#pragma GCC diagnostic pop
-                set_model_params(model);
-            }
             den_temp = king_den(model, r);
             break;
         case InvalidDwarf:

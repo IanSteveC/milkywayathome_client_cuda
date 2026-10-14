@@ -4,7 +4,19 @@
 #include <cstring>
 #include <cmath>
 #include <vector>
+#if defined(__HIP__)
+/* HIP/AMD build (hipcc): the harness only uses the handful of runtime
+ * calls below, mapped 1:1 like nbody_hip_compat.h does for the app. */
+#include <hip/hip_runtime.h>
+#define cudaMalloc               hipMalloc
+#define cudaMemcpy               hipMemcpy
+#define cudaMemcpyHostToDevice   hipMemcpyHostToDevice
+#define cudaMemcpyDeviceToHost   hipMemcpyDeviceToHost
+#define cudaDeviceSynchronize    hipDeviceSynchronize
+#define cudaSuccess              hipSuccess
+#else
 #include <cuda_runtime.h>
+#endif
 extern "C" {
 #include "crlibm.h"
 }

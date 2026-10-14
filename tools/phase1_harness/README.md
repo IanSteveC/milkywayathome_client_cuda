@@ -27,5 +27,20 @@ c++ -pthread -fopenmp /tmp/gen_dwarfs.o $B/nbody/CMakeFiles/milkyway_nbody.dir/c
 cd /tmp && ./gen_dwarfs && ./test_fun 20000
 ```
 
+HIP/AMD (no NVIDIA GPU needed; test_fun.cu maps the few runtime calls to
+HIP under `__HIP__`). Same gen_dwarfs build, linked against a HIP build dir
+(no cmake_device_link.o; replace the cudart libs with libamdhip64.so):
+
+```
+B=build_cm197_hip1200   # any configured HIP build dir
+c++ -pthread -fopenmp /tmp/gen_dwarfs.o -o /tmp/gen_dwarfs \
+    -Wl,--start-group $B/lib/libnbody.a $B/lib/libnbody_lua.a $B/lib/libmilkyway_lua.a $B/lib/libnbody.a $B/lib/libmilkyway.a $B/lib/libpopt.a $B/lib/liblua51.a -lm -lrt $B/lib/libcrlibm.a -Wl,--end-group \
+    /opt/rocm/lib/libamdhip64.so /home/ian/builds/boinc/api/libboinc_api.a /home/ian/builds/boinc/lib/libboinc.a $B/lib/libdsfmt.a -lrt
+/opt/rocm/bin/hipcc -O2 --offload-arch=gfx1200 -ffp-contract=off -std=c++17 -I nbody/include -I crlibm -I $B/crlibm -I milkyway/include -I $B/include -DDOUBLEPREC=1 \
+    tools/phase1_harness/test_fun.cu -o /tmp/test_fun -L$B/lib -lcrlibm
+```
+
+Validated 2026-10-14 on RX 9060 XT (gfx1200, ROCm 7.2): 3240000 nodes, 0 mismatches.
+
 The harness embeds the kernels by slicing them out of nbody_cuda.cu at
 generation time; regenerate test_fun.cu if the kernel boundaries move.
