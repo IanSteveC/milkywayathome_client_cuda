@@ -40,7 +40,8 @@ c++ -pthread -fopenmp /tmp/gen_dwarfs.o -o /tmp/gen_dwarfs \
     tools/phase1_harness/test_fun.cu -o /tmp/test_fun -L$B/lib -lcrlibm
 ```
 
-Validated 2026-10-14 on RX 9060 XT (gfx1200, ROCm 7.2): 3240000 nodes, 0 mismatches.
+Validated 2026-10-14 at b5905f06: RX 9060 XT (gfx1200, ROCm 7.2) and Tesla V100 (sm_70,
+CUDA 12.9), 3240000 nodes each, 0 mismatches.
 
 The harness embeds the kernels by slicing them out of nbody_cuda.cu at
 generation time; regenerate test_fun.cu if the kernel boundaries move.
