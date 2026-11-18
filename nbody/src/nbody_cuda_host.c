@@ -120,12 +120,13 @@ NBodyStatus nbCUDAMarshalBodiesToDevice(NBodyState* st, int nNode)
 
     nbCUDAPackBodiesToSoA(st->bodytab, st->nbody, scratch);
 
-    /* Per-body type for v1.96 per-type softening: +1 light/baryon,
-     * -1 dark matter. Same body order as the SoA pack. */
-    int* types = (int*) mwMalloc((size_t) st->nbody * sizeof(int));
+    /* Per-body softening index for v1.97 per-type softening
+     * (Body.eps2Index, set by nbCacheEps2Indices or restored from a
+     * checkpoint). Same body order as the SoA pack. */
+    int* eps2idx = (int*) mwMalloc((size_t) st->nbody * sizeof(int));
     for (int i = 0; i < st->nbody; ++i)
     {
-        types[i] = (int) st->bodytab[i].bodynode.type;
+        eps2idx[i] = st->bodytab[i].eps2Index;
     }
 
     int rc = nbCUDABuffersUploadBodies(st->cudaBuffers,
@@ -136,10 +137,10 @@ NBodyStatus nbCUDAMarshalBodiesToDevice(NBodyState* st, int nNode)
                                        scratch + 4 * (size_t) st->nbody,
                                        scratch + 5 * (size_t) st->nbody,
                                        scratch + 6 * (size_t) st->nbody,
-                                       types,
+                                       eps2idx,
                                        st->nbody);
     free(scratch);
-    free(types);
+    free(eps2idx);
     return (rc == 0) ? NBODY_SUCCESS : NBODY_ERROR;
 }
 
@@ -363,6 +364,26 @@ NBodyStatus_int nbInitCUDA(const NBodyCtx* ctx, NBodyState* st)
         return NBODY_ERROR;
     }
 
+    /* v1.97 per-type softening: the force kernels hold the eps2 matrix
+     * in shared memory, sized for NBODY_CUDA_EPS2_MAX_TYPES types. */
+    if (!ctx->eps2 || ctx->eps2_size < 1 || ctx->eps2_size > NBODY_CUDA_EPS2_MAX_TYPES)
+    {
+        mw_printf(NBODY_GPU_TAG " softening matrix with %zu particle types not supported by "
+                  NBODY_GPU_NAME " backend (max %d) — falling back to CPU\n",
+                  (size_t) ctx->eps2_size, NBODY_CUDA_EPS2_MAX_TYPES);
+        return NBODY_ERROR;
+    }
+    for (int i = 0; i < st->nbody; ++i)
+    {
+        const int idx = st->bodytab[i].eps2Index;
+        if (idx < 0 || (size_t) idx >= ctx->eps2_size)
+        {
+            mw_printf(NBODY_GPU_TAG " body %d has softening index %d outside the %zu-type matrix — falling back to CPU\n",
+                      i, idx, (size_t) ctx->eps2_size);
+            return NBODY_ERROR;
+        }
+    }
+
     #ifndef NBODY_CUDA_FORCE_EXACT
       #define NBODY_CUDA_FORCE_EXACT 0
     #endif
@@ -420,6 +441,13 @@ NBodyStatus_int nbInitCUDA(const NBodyCtx* ctx, NBodyState* st)
         return NBODY_ERROR;
     }
 
+    if (nbCUDABuffersSetSoftening(st->cudaBuffers, ctx->eps2, (int) ctx->eps2_size, ctx->eps2_min) != 0)
+    {
+        mw_printf(NBODY_GPU_TAG " failed to upload softening matrix\n");
+        nbCUDAReleaseBodyBuffers(st);
+        return NBODY_ERROR;
+    }
+
     if (firstInit)
     {
         if (nbCUDATreeBuffersAlloc(st->cudaBuffers, nNode, numSMs, useQuad) != 0)
@@ -443,7 +471,7 @@ NBodyStatus_int nbInitCUDA(const NBodyCtx* ctx, NBodyState* st)
     nbCUDAPackPotential(ctx, &pot);
     int initForceFailed = 0;
     #if NBODY_CUDA_FORCE_EXACT
-        initForceFailed = (nbCUDALaunchForceExact(st->cudaBuffers, st->nbody, ctx->eps2[0], ctx->eps2[1], ctx->eps2[2]) != 0)
+        initForceFailed = (nbCUDALaunchForceExact(st->cudaBuffers, st->nbody) != 0)
             || (nbCUDALaunchExternalPotential(st->cudaBuffers, st->nbody, &pot,
                                               ctx->LMC ? NBODY_CUDA_LMC_PLUMMER : NBODY_CUDA_LMC_NONE,
                                               ctx->LMCmass, ctx->LMCscale, 0.0,
@@ -460,7 +488,7 @@ NBodyStatus_int nbInitCUDA(const NBodyCtx* ctx, NBodyState* st)
             || (useQuad && nbCUDALaunchQuadMoments(st->cudaBuffers, nNode) != 0)
             || (useQuad && nbCUDALaunchCellPack(st->cudaBuffers, nNode) != 0)
             || (nbCUDALaunchForceTree(st->cudaBuffers, st->nbody, nNode,
-                                      ctx->eps2[0], ctx->eps2[1], ctx->eps2[2], ctx->theta, useQuad,
+                                      ctx->theta, useQuad,
                                       /*updateVel=*/0,
                                       ctx->timestep,
                                       NBODY_CUDA_INT_FIRST_HALF) != 0)
@@ -687,7 +715,7 @@ NBodyStatus_int nbStepSystemCUDA(const NBodyCtx* ctx, NBodyState* st)
     #endif
     #if NBODY_CUDA_FORCE_EXACT
         KSTART("forceExact (DEBUG bypass tree)");
-        if (nbCUDALaunchForceExact(st->cudaBuffers, nbody, ctx->eps2[0], ctx->eps2[1], ctx->eps2[2]) != 0)
+        if (nbCUDALaunchForceExact(st->cudaBuffers, nbody) != 0)
         {
             return NBODY_ERROR;
         }
@@ -723,7 +751,7 @@ NBodyStatus_int nbStepSystemCUDA(const NBodyCtx* ctx, NBodyState* st)
 
         KSTART("forceTree");
         if (nbCUDALaunchForceTree(st->cudaBuffers, nbody, nNode,
-                                  ctx->eps2[0], ctx->eps2[1], ctx->eps2[2], ctx->theta,
+                                  ctx->theta,
                                   st->usesQuad ? 1 : 0,
                                   /*updateVel=*/1,
                                   dt,

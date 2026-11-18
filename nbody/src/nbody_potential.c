@@ -131,13 +131,14 @@ void nbPrintArgv(int argc, const char* const* argv)
  * easier (you can spot a bad timestep / nStep / eps2 at a glance). */
 void nbPrintRunParams(const NBodyCtx* ctx, int nbody)
 {
-    mw_printf("[nbody] params: nbody=%d nStep=%u timestep=%.9g eps2=%.6g "
+    mw_printf("[nbody] params: nbody=%d nStep=%u timestep=%.9g eps2Types=%zu eps2Min=%.6g "
               "theta=%.6g BestLikeStart=%.4g useBestLike=%d criterion=%d "
               "useQuad=%d LMC=%d LMCmass=%.4g LMCscale=%.4g\n",
               nbody,
               ctx->nStep,
               ctx->timestep,
-              ctx->eps2,
+              (size_t) ctx->eps2_size,
+              ctx->eps2_min,
               ctx->theta,
               ctx->BestLikeStart,
               ctx->useBestLike ? 1 : 0,

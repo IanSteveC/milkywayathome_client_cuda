@@ -83,6 +83,14 @@ typedef struct
 static const char hdr[] = "mwnbody";
 static const char tail[] = "end";
 
+/* v1.97: NBodyCtx.eps2 / eps2_index are heap arrays, so the memcpy of
+ * the context into the header only saves their (dead on resume)
+ * addresses. Resume does not re-run the Lua setup, so the header also
+ * carries copies of both arrays, and nbReadCheckpointHeader rebuilds
+ * them. Capacity is fixed so every size computation keeps using
+ * hdrSize. */
+#define NBODY_CHECKPOINT_EPS2_MAX_TYPES 64
+
 typedef struct
 {
     char header[128];                     /* "mwnbody" */
@@ -96,6 +104,9 @@ typedef struct
     uint32_t treeIncest;
     real rsize;
     NBodyCtx ctx;
+    uint32_t eps2Size;                    /* 0 = matrix not saved */
+    int32_t eps2Index[NBODY_CHECKPOINT_EPS2_MAX_TYPES];
+    real eps2[NBODY_CHECKPOINT_EPS2_MAX_TYPES * NBODY_CHECKPOINT_EPS2_MAX_TYPES];
 } NBodyCheckpointHeader;
 
 static const size_t hdrSize = sizeof(NBodyCheckpointHeader) + sizeof(tail);
@@ -114,6 +125,25 @@ static void nbPrepareWriteCheckpointHeader(NBodyCheckpointHeader* cp, const NBod
     cp->minorVersion= NBODY_VERSION_MINOR;
 
     memcpy(&cp->ctx, ctx, sizeof(cp->ctx));
+
+    memset(cp->eps2Index, 0, sizeof(cp->eps2Index));
+    memset(cp->eps2, 0, sizeof(cp->eps2));
+    cp->eps2Size = 0;
+    if (ctx->eps2 && ctx->eps2_index
+        && ctx->eps2_size >= 1 && ctx->eps2_size <= NBODY_CHECKPOINT_EPS2_MAX_TYPES)
+    {
+        size_t i;
+        cp->eps2Size = (uint32_t) ctx->eps2_size;
+        for (i = 0; i < ctx->eps2_size; ++i)
+            cp->eps2Index[i] = (int32_t) ctx->eps2_index[i];
+        memcpy(cp->eps2, ctx->eps2, ctx->eps2_size * ctx->eps2_size * sizeof(real));
+    }
+    else
+    {
+        mw_printf("Warning: softening matrix (%u types) not saved in checkpoint; "
+                  "resuming from it will fail\n", (unsigned int) ctx->eps2_size);
+    }
+
     cp->nbody = st->nbody;
     cp->step = st->step;
     cp->rsize = st->tree.rsize;
@@ -123,6 +153,25 @@ static void nbPrepareWriteCheckpointHeader(NBodyCheckpointHeader* cp, const NBod
 static void nbReadCheckpointHeader(NBodyCheckpointHeader* cp, NBodyCtx* ctx, NBodyState* st)
 {
     memcpy(ctx, &cp->ctx, sizeof(*ctx));
+
+    /* The copied eps2 / eps2_index pointers belong to the process that
+     * wrote the checkpoint. Replace them with fresh arrays built from
+     * the saved copies (nbVerifyCheckpointHeader rejects a header
+     * without a valid matrix). */
+    ctx->eps2 = NULL;
+    ctx->eps2_index = NULL;
+    if (cp->eps2Size >= 1 && cp->eps2Size <= NBODY_CHECKPOINT_EPS2_MAX_TYPES
+        && (size_t) cp->eps2Size == ctx->eps2_size)
+    {
+        size_t i;
+        const size_t n = (size_t) cp->eps2Size;
+        ctx->eps2 = (real*) mwCalloc(n * n, sizeof(real));
+        ctx->eps2_index = (int*) mwCalloc(n, sizeof(int));
+        memcpy(ctx->eps2, cp->eps2, n * n * sizeof(real));
+        for (i = 0; i < n; ++i)
+            ctx->eps2_index[i] = (int) cp->eps2Index[i];
+    }
+
     st->nbody = cp->nbody;
     st->step = cp->step;
     st->tree.rsize = cp->rsize;
@@ -172,6 +221,14 @@ static int nbVerifyCheckpointHeader(const NBodyCheckpointHeader* cpHdr,
         mw_printf("Version mismatch in checkpoint file. File is for %u.%u, But version is %u.%u\n",
                   cpHdr->majorVersion, cpHdr->minorVersion,
                   NBODY_VERSION_MAJOR, NBODY_VERSION_MINOR);
+        return 1;
+    }
+
+    if (   cpHdr->eps2Size < 1 || cpHdr->eps2Size > NBODY_CHECKPOINT_EPS2_MAX_TYPES
+        || (size_t) cpHdr->eps2Size != cpHdr->ctx.eps2_size)
+    {
+        mw_printf("Checkpoint file has no valid softening matrix (%u types saved, context has "ZU")\n",
+                  cpHdr->eps2Size, (size_t) cpHdr->ctx.eps2_size);
         return 1;
     }
 
@@ -524,6 +581,13 @@ static int nbStandardCheckpointRead(NBodyCtx* ctx, NBodyState* st, const char* f
 #pragma GCC diagnostic ignored "-Wunused-result"
     fread(&cpHdr, sizeof(NBodyCheckpointHeader), 1, f);
     nbReadCheckpointHeader(&cpHdr, ctx, st);
+    if (!ctx->eps2 || !ctx->eps2_index)
+    {
+        mw_printf("Checkpoint file has no valid softening matrix (%u types saved, context has "ZU")\n",
+                  cpHdr.eps2Size, (size_t) cpHdr.ctx.eps2_size);
+        fclose(f);
+        return TRUE;
+    }
     st->nShiftLMC = cpHdr.nShiftLMC;
     st->nOrbitTrace = cpHdr.nOrbitTrace;
 

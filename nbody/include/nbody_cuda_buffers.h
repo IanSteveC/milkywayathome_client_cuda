@@ -127,8 +127,21 @@ NBodyStatus_int nbCUDABuffersUploadBodies(struct NBodyCUDABuffers* buffers,
                                           const double* hVelY,
                                           const double* hVelZ,
                                           const double* hMasses,
-                                          const int* hTypes,
+                                          const int* hEps2Idx,
                                           int nbody);
+
+/* v1.97 per-type softening. Largest softening matrix (types per side)
+ * the GPU force kernels hold in shared memory; nbInitCUDA falls back to
+ * the CPU path for a workunit with more types than this. */
+#define NBODY_CUDA_EPS2_MAX_TYPES 8
+
+/* Upload the softening matrix ctx->eps2 (eps2Size x eps2Size, row-major)
+ * and ctx->eps2_min. Must be called after nbCUDABuffersAlloc and before
+ * any force launch. */
+NBodyStatus_int nbCUDABuffersSetSoftening(struct NBodyCUDABuffers* buffers,
+                                          const double* hEps2,
+                                          int eps2Size,
+                                          double eps2Min);
 
 /* Download pos/vel from the device into host SoA arrays. Used on
  * checkpoint and at end-of-simulation to make the CPU view
@@ -185,10 +198,7 @@ typedef enum {
  * Synchronous: blocks until the kernel completes.
  */
 NBodyStatus_int nbCUDALaunchForceExact(struct NBodyCUDABuffers* buffers,
-                                       int nbody,
-                                       double eps2_0,
-                                       double eps2_1,
-                                       double eps2_2);
+                                       int nbody);
 
 /* ----- Phase 4: Barnes-Hut tree construction launchers ----- */
 
@@ -347,7 +357,7 @@ NBodyStatus_int nbCUDALaunchExternalPotential(struct NBodyCUDABuffers* buffers,
  * (`branch == FULL_KICK` path) using the old-vs-new acceleration
  * delta.
  *
- *   eps2    - squared softening length
+ *   softening - taken from the matrix uploaded by nbCUDABuffersSetSoftening
  *   theta   - opening criterion (BH opening angle); 0.0 means "always open"
  *   updateVel - 1 to write the corrected velocity in the FULL_KICK
  *               branch, 0 to skip the writeback (matches OpenCL).
@@ -358,9 +368,6 @@ NBodyStatus_int nbCUDALaunchExternalPotential(struct NBodyCUDABuffers* buffers,
 NBodyStatus_int nbCUDALaunchForceTree(struct NBodyCUDABuffers* buffers,
                                       int nbody,
                                       int nNode,
-                                      double eps2_0,
-                                      double eps2_1,
-                                      double eps2_2,
                                       double theta,
                                       int useQuad,
                                       int updateVel,
