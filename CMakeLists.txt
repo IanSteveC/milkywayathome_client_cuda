@@ -270,9 +270,11 @@ set(gcc_extra_flags "-fno-common -funswitch-loops ")
 set(gcc_only_extra_flags "-freg-struct-return ")
 
 
-## Removed `-ffp-contract=off` (was added during the aarch64 port to mirror
-## x86_64 behavior — on x86_64 itself the reference build used the GCC
-## default fp-contract, so we don't need it back).
+check_library_exists(dl dladdr "" HAVE_LIBDL)
+if (HAVE_LIBDL)
+  list(APPEND gcc_extra_flags "-ldl")
+endif()
+list(APPEND gcc_extra_flags "-ffp-contract=off")
 
 add_flag_if_supported("-maccumulate-outgoing-args")
 
